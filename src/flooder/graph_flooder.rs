@@ -360,7 +360,7 @@ impl GraphFlooder {
     // Reschedule events at a detector node
     // ---------------------------------------------------------------
 
-    fn reschedule_events_at_detector_node(&mut self, node_idx: NodeIdx) {
+    pub fn reschedule_events_at_detector_node(&mut self, node_idx: NodeIdx) {
         let (best_neighbor, best_time) = self.find_next_event_at_node(node_idx);
         let node = &mut self.graph.nodes[node_idx.0 as usize];
         if best_neighbor == NO_NEIGHBOR {
