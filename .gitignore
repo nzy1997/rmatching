@@ -1,0 +1,15 @@
+/.worktrees/
+PyMatching/
+
+Cargo.lock
+
+# Added by cargo
+
+/target
+.cursor/
+
+# Coverage reports
+cobertura.xml
+
+# Build artifacts
+*.rlib
