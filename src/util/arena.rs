@@ -52,6 +52,11 @@ impl<T: Default> Arena<T> {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+
+    /// Borrow the underlying items slice (needed for read-only access while mutating other fields).
+    pub fn items(&self) -> &[T] {
+        &self.items
+    }
 }
 
 impl<T: Default> Default for Arena<T> {
