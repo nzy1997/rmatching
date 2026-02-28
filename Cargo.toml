@@ -1,0 +1,13 @@
+[package]
+name = "rmatching"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+rsinter = ["dep:rsinter", "dep:rstim"]
+
+[dependencies]
+rsinter = { path = "../rsinter", optional = true }
+rstim = { path = "../rstim", optional = true }
+
+[dev-dependencies]
