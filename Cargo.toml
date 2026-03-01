@@ -3,11 +3,13 @@ name = "rmatching"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+
 [features]
 rsinter = ["dep:rsinter", "dep:rstim"]
 
 [dependencies]
-rsinter = { path = "../rsinter", optional = true }
-rstim = { path = "../rstim", optional = true }
+rsinter = { git = "https://github.com/nzy1997/rstim.git", optional = true }
+rstim = { git = "https://github.com/nzy1997/rstim.git", optional = true }
 
 [dev-dependencies]
