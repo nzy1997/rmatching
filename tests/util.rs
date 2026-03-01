@@ -268,3 +268,109 @@ fn radix_heap_reset() {
     assert!(q.is_empty());
     assert_eq!(q.cur_time, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Coverage: Arena Default trait (lines 63-64)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn arena_default_trait() {
+    let arena: Arena<i32> = Arena::default();
+    assert!(arena.is_empty());
+    assert_eq!(arena.len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: RadixHeapQueue Default trait (lines 117-119)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn radix_heap_default_trait() {
+    let q: RadixHeapQueue<TestEvent> = RadixHeapQueue::default();
+    assert!(q.is_empty());
+    assert_eq!(q.cur_time, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: RadixHeapQueue clear (line 70 - dequeue when non-empty
+// but bucket 0 empty and all other buckets empty too)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn radix_heap_clear_then_dequeue() {
+    let mut q: RadixHeapQueue<TestEvent> = RadixHeapQueue::new();
+    q.enqueue(TestEvent {
+        time: Wrapping(5),
+        payload: 1,
+    });
+    q.clear();
+    // After clear, dequeue should return no_event
+    let e = q.dequeue();
+    assert!(e.is_no_event());
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: Varying<i32> VaryingInt trait methods (lines 37-38)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn varying_i32_two_and_three() {
+    // Test Varying<i32> shrinking (uses two()) and growing+shrinking combo
+    let shrinking = Varying::<i32>((15i32 << 2) | 2);
+    assert!(shrinking.is_shrinking());
+    assert_eq!(shrinking.y_intercept(), 15);
+    assert_eq!(shrinking.get_distance_at_time(5), 10);
+    assert_eq!(shrinking.time_of_x_intercept(), 15);
+
+    // Test is_frozen which checks (data & three()) == zero()
+    let frozen = Varying32::frozen(7);
+    assert!(frozen.is_frozen());
+    assert_eq!(frozen.y_intercept(), 7);
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: Varying time_of_x_intercept_when_added_to with mixed slopes (line 129)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn varying_x_intercept_mixed_slopes() {
+    // One growing, one frozen: combined slope = 1, not 2
+    let growing = VaryingCT::growing_varying_with_zero_distance_at_time(0); // y_int = 0
+    let frozen = VaryingCT::frozen(0); // y_int = 0
+
+    // neg_sum = 0 - 0 - 0 = 0; not both growing => result = 0
+    let t = growing.time_of_x_intercept_when_added_to(frozen);
+    assert_eq!(t, 0);
+
+    // growing from time 0 with offset: y_int = -5
+    let g = growing - 5i64; // y_int = -5, growing
+    let f = VaryingCT::frozen(0); // y_int = 0
+
+    // neg_sum = -(-5) - 0 = 5; not both growing => result = 5
+    let t = g.time_of_x_intercept_when_added_to(f);
+    assert_eq!(t, 5);
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: Varying state transitions for i32
+// ---------------------------------------------------------------------------
+
+#[test]
+fn varying_i32_state_transitions() {
+    let v = Varying32::growing_varying_with_zero_distance_at_time(0);
+    assert!(v.is_growing());
+    assert_eq!(v.get_distance_at_time(10), 10);
+
+    let frozen = v.then_frozen_at_time(10);
+    assert!(frozen.is_frozen());
+    assert_eq!(frozen.get_distance_at_time(100), 10);
+
+    let shrinking = frozen.then_shrinking_at_time(10);
+    assert!(shrinking.is_shrinking());
+    assert_eq!(shrinking.get_distance_at_time(15), 5);
+
+    let growing_again = shrinking.then_growing_at_time(15);
+    assert!(growing_again.is_growing());
+    assert_eq!(growing_again.get_distance_at_time(15), 5);
+    assert_eq!(growing_again.get_distance_at_time(20), 10);
+}

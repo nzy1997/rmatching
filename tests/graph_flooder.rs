@@ -81,3 +81,99 @@ fn flooder_no_event_on_empty() {
     let event = flooder.run_until_next_mwpm_notification();
     assert!(event.is_no_event());
 }
+
+// ---------------------------------------------------------------------------
+// Coverage: set_region_growing, set_region_shrinking, set_region_frozen
+// (lines 98, 101-102, 112, 240, 475-476, 480-481)
+// ---------------------------------------------------------------------------
+
+/// Test region state transitions: growing -> shrinking -> frozen.
+/// Exercises set_region_shrinking (and schedule_tentative_shrink_event).
+#[test]
+fn flooder_region_state_transitions() {
+    let mut graph = MatchingGraph::new(3, 1);
+    graph.add_edge(0, 1, 20, &[0]);
+    graph.add_edge(1, 2, 20, &[]);
+    let mut flooder = GraphFlooder::new(graph);
+
+    let region = flooder.create_detection_event(NodeIdx(0));
+
+    // Region starts growing
+    assert!(flooder.region_arena[region.0].radius.is_growing());
+
+    // Set to shrinking
+    flooder.set_region_shrinking(region);
+    assert!(flooder.region_arena[region.0].radius.is_shrinking());
+
+    // Set to frozen (from shrinking)
+    flooder.set_region_frozen(region);
+    assert!(flooder.region_arena[region.0].radius.is_frozen());
+}
+
+/// Test set_region_frozen when region was growing (not shrinking).
+#[test]
+fn flooder_freeze_growing_region() {
+    let mut graph = MatchingGraph::new(2, 1);
+    graph.add_edge(0, 1, 20, &[0]);
+    let mut flooder = GraphFlooder::new(graph);
+
+    let region = flooder.create_detection_event(NodeIdx(0));
+    assert!(flooder.region_arena[region.0].radius.is_growing());
+
+    // Freeze while growing (not shrinking - exercises the was_shrinking=false branch)
+    flooder.set_region_frozen(region);
+    assert!(flooder.region_arena[region.0].radius.is_frozen());
+}
+
+/// Test that a chain of 3 nodes with detection events at both ends
+/// produces a collision, exercising grow-into-empty-node and collision paths.
+#[test]
+fn flooder_chain_three_nodes_collision() {
+    let mut graph = MatchingGraph::new(3, 1);
+    graph.add_edge(0, 1, 10, &[0]);
+    graph.add_edge(1, 2, 10, &[]);
+    let mut flooder = GraphFlooder::new(graph);
+
+    flooder.create_detection_event(NodeIdx(0));
+    flooder.create_detection_event(NodeIdx(2));
+
+    // Should get a RegionHitRegion event when the two regions collide
+    let event = flooder.run_until_next_mwpm_notification();
+    match event {
+        MwpmEvent::RegionHitRegion { .. } => {}
+        _ => panic!("Expected RegionHitRegion"),
+    }
+}
+
+/// Tests FloodCheckEvent HasTime trait methods.
+#[test]
+fn flood_check_event_has_time() {
+    use rmatching::interop::FloodCheckEvent;
+    use rmatching::util::radix_heap::HasTime;
+    use std::num::Wrapping;
+
+    let no = FloodCheckEvent::no_event();
+    assert!(no.is_no_event());
+    assert_eq!(no.time(), Wrapping(0));
+
+    let node_ev = FloodCheckEvent::LookAtNode {
+        node: NodeIdx(0),
+        time: Wrapping(42),
+    };
+    assert!(!node_ev.is_no_event());
+    assert_eq!(node_ev.time(), Wrapping(42));
+
+    let shrink_ev = FloodCheckEvent::LookAtShrinkingRegion {
+        region: RegionIdx(0),
+        time: Wrapping(99),
+    };
+    assert!(!shrink_ev.is_no_event());
+    assert_eq!(shrink_ev.time(), Wrapping(99));
+
+    let search_ev = FloodCheckEvent::LookAtSearchNode {
+        node: SearchNodeIdx(0),
+        time: Wrapping(7),
+    };
+    assert!(!search_ev.is_no_event());
+    assert_eq!(search_ev.time(), Wrapping(7));
+}
