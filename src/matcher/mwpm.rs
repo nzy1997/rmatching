@@ -318,6 +318,14 @@ impl Mwpm {
         self.node_arena[common_ancestor.0].outer_region = Some(blossom_region);
         self.flooder.region_arena[blossom_region.0].alt_tree_node = Some(common_ancestor);
 
+        // Store anchor nodes for blossom shattering
+        let inner_to_outer_loc = self.node_arena[common_ancestor.0].inner_to_outer_edge.loc_from;
+        let parent_loc = self.node_arena[common_ancestor.0].parent
+            .as_ref()
+            .and_then(|p| p.edge.loc_from);
+        self.flooder.region_arena[blossom_region.0].blossom_in_parent_loc = parent_loc;
+        self.flooder.region_arena[blossom_region.0].blossom_in_child_loc = inner_to_outer_loc;
+
         // Re-parent orphans
         for c in prune_result_1.orphan_edges {
             let child_idx = c.alt_tree_node;

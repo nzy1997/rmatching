@@ -12,6 +12,10 @@ pub struct GraphFillRegion {
     pub match_: Option<Match>,
     pub blossom_children: Vec<RegionEdge>,
     pub shell_area: Vec<NodeIdx>,
+    /// Node anchoring the parent-side edge (set when creating a blossom)
+    pub blossom_in_parent_loc: Option<NodeIdx>,
+    /// Node anchoring the child-side edge (set when creating a blossom)
+    pub blossom_in_child_loc: Option<NodeIdx>,
 }
 
 impl Default for GraphFillRegion {
@@ -25,6 +29,8 @@ impl Default for GraphFillRegion {
             match_: None,
             blossom_children: Vec::new(),
             shell_area: Vec::new(),
+            blossom_in_parent_loc: None,
+            blossom_in_child_loc: None,
         }
     }
 }

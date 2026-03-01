@@ -469,10 +469,26 @@ impl GraphFlooder {
     }
 
     fn do_blossom_shattering(&self, region_idx: RegionIdx) -> MwpmEvent {
-        // Placeholder: full blossom shattering requires AltTreeNode (Task 6).
-        // For now, return NoEvent.
-        let _ = region_idx;
-        MwpmEvent::NoEvent
+        let region = &self.region_arena[region_idx.0];
+
+        let in_parent = region.blossom_in_parent_loc.and_then(|node_idx| {
+            self.graph.nodes[node_idx.0 as usize]
+                .heir_region_on_shatter(self.region_arena.items())
+        });
+
+        let in_child = region.blossom_in_child_loc.and_then(|node_idx| {
+            self.graph.nodes[node_idx.0 as usize]
+                .heir_region_on_shatter(self.region_arena.items())
+        });
+
+        match (in_parent, in_child) {
+            (Some(ip), Some(ic)) => MwpmEvent::BlossomShatter {
+                blossom: region_idx,
+                in_parent: ip,
+                in_child: ic,
+            },
+            _ => MwpmEvent::NoEvent,
+        }
     }
 
     // ---------------------------------------------------------------
