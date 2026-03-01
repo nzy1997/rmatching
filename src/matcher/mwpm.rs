@@ -693,18 +693,24 @@ impl Mwpm {
         region: RegionIdx,
         res: &mut MatchingResult,
     ) -> RegionIdx {
-        // 1. Clear blossom parent on all children
         let children: Vec<RegionEdge> = self.flooder.region_arena[region.0].blossom_children.clone();
+
+        // 1. Find which child owns the match edge's loc_from node.
+        //    We must do this BEFORE clearing blossom_parent, because
+        //    heir_region_on_shatter walks the blossom_parent chain.
+        let match_edge = self.flooder.region_arena[region.0].match_.as_ref().unwrap().edge;
+        let subblossom = match_edge.loc_from
+            .and_then(|node_idx| {
+                let node = &self.flooder.graph.nodes[node_idx.0 as usize];
+                node.heir_region_on_shatter(self.flooder.region_arena.items())
+            })
+            .expect("match edge loc_from must have a region");
+
+        // 2. Clear blossom parent on all children
         for child in &children {
             self.flooder.region_arena[child.region.0].blossom_parent = None;
             self.flooder.region_arena[child.region.0].blossom_parent_top = None;
         }
-
-        // 2. Find which child owns the match edge's loc_from node
-        let match_edge = self.flooder.region_arena[region.0].match_.as_ref().unwrap().edge;
-        let subblossom = match_edge.loc_from
-            .and_then(|node_idx| self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top)
-            .expect("match edge loc_from must have a region");
 
         // 3. Transfer the blossom's match to subblossom
         let blossom_match = self.flooder.region_arena[region.0].match_.clone().unwrap();

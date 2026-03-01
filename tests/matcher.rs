@@ -194,3 +194,32 @@ fn alt_tree_most_recent_common_ancestor() {
     let lca = AltTreeNode::most_recent_common_ancestor(c1, c2, &mut arena);
     assert_eq!(lca, Some(root));
 }
+
+#[test]
+fn mwpm_blossom_then_match_4_events() {
+    use rmatching::Matching;
+    let dem = "error(0.1) D0 D1 L0\nerror(0.1) D1 D2\nerror(0.1) D0 D2\nerror(0.1) D0\n";
+    let mut m = Matching::from_dem(dem).unwrap();
+    let pred = m.decode(&[1, 1, 1]);
+    assert_eq!(pred.len(), 1);
+}
+
+#[test]
+fn mwpm_blossom_decode_chain_5() {
+    use rmatching::Matching;
+    let dem = concat!(
+        "error(0.1) D0 D1 L0\n",
+        "error(0.1) D1 D2\n",
+        "error(0.1) D2 D3 L1\n",
+        "error(0.1) D3 D4\n",
+        "error(0.1) D0\n",
+        "error(0.1) D4\n",
+    );
+    let mut m = Matching::from_dem(dem).unwrap();
+    let pred = m.decode(&[1, 1, 0, 0, 0]);
+    assert_eq!(pred, vec![1, 0]);
+    let pred = m.decode(&[0, 0, 1, 1, 0]);
+    assert_eq!(pred, vec![0, 1]);
+    let pred = m.decode(&[0, 0, 0, 0, 0]);
+    assert_eq!(pred, vec![0, 0]);
+}

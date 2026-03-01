@@ -200,27 +200,40 @@ fn shatter_and_extract(mwpm: &mut Mwpm, detection_events: &[usize]) -> MatchingR
             && mwpm.flooder.graph.nodes[i].region_that_arrived.is_some()
         {
             let top = mwpm.flooder.graph.nodes[i].region_that_arrived_top.unwrap();
-            // Clean up shell areas (resets node.region_that_arrived) to prevent
-            // double-processing when both endpoints of a match are detection events.
-            cleanup_region_shell_area(mwpm, top);
+            // Collect shell-area nodes to reset *after* shattering, since
+            // pair_and_shatter_subblossoms needs region_that_arrived_top to
+            // locate sub-blossoms.
+            let mut nodes_to_clean = collect_shell_nodes(mwpm, top);
             let match_region = mwpm.flooder.region_arena[top.0]
                 .match_
                 .as_ref()
                 .and_then(|m| m.region);
             if let Some(mr) = match_region {
-                cleanup_region_shell_area(mwpm, mr);
+                nodes_to_clean.extend(collect_shell_nodes(mwpm, mr));
             }
+            // Shattering reads region_that_arrived_top, so run it first.
             res += mwpm.shatter_blossom_and_extract_matches(top);
+            // Now reset the nodes to prevent double-processing.
+            for node_idx in nodes_to_clean {
+                mwpm.flooder.graph.nodes[node_idx.0 as usize].reset();
+            }
         }
     }
     res
 }
 
-/// Reset all detector nodes in a region's shell area, mirroring C++ cleanup_shell_area.
-fn cleanup_region_shell_area(mwpm: &mut Mwpm, region: RegionIdx) {
-    let shell: Vec<NodeIdx> = mwpm.flooder.region_arena[region.0].shell_area.clone();
-    for node_idx in shell {
-        mwpm.flooder.graph.nodes[node_idx.0 as usize].reset();
+/// Collect all detector-node indices in a region's shell area (and its
+/// blossom children, recursively) so they can be reset after shattering.
+fn collect_shell_nodes(mwpm: &Mwpm, region: RegionIdx) -> Vec<NodeIdx> {
+    let mut nodes = Vec::new();
+    collect_shell_nodes_recursive(mwpm, region, &mut nodes);
+    nodes
+}
+
+fn collect_shell_nodes_recursive(mwpm: &Mwpm, region: RegionIdx, out: &mut Vec<NodeIdx>) {
+    out.extend(mwpm.flooder.region_arena[region.0].shell_area.iter().copied());
+    for child in &mwpm.flooder.region_arena[region.0].blossom_children {
+        collect_shell_nodes_recursive(mwpm, child.region, out);
     }
 }
 
