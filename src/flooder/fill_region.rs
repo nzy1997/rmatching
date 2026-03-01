@@ -39,4 +39,9 @@ impl GraphFillRegion {
     pub fn tree_equal(&self, other: &GraphFillRegion) -> bool {
         self.alt_tree_node.is_some() && self.alt_tree_node == other.alt_tree_node
     }
+
+    pub fn clear_blossom_parent(&mut self) {
+        self.blossom_parent = None;
+        self.blossom_parent_top = None;
+    }
 }

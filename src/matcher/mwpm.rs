@@ -690,12 +690,61 @@ impl Mwpm {
 
     fn pair_and_shatter_subblossoms(
         &mut self,
-        _region: RegionIdx,
-        _res: &mut MatchingResult,
+        region: RegionIdx,
+        res: &mut MatchingResult,
     ) -> RegionIdx {
-        // Full sub-blossom pairing requires region_that_arrived_top lookups.
-        // This is a simplified placeholder; full implementation in Task 7+.
-        _region
+        // 1. Clear blossom parent on all children
+        let children: Vec<RegionEdge> = self.flooder.region_arena[region.0].blossom_children.clone();
+        for child in &children {
+            self.flooder.region_arena[child.region.0].blossom_parent = None;
+            self.flooder.region_arena[child.region.0].blossom_parent_top = None;
+        }
+
+        // 2. Find which child owns the match edge's loc_from node
+        let match_edge = self.flooder.region_arena[region.0].match_.as_ref().unwrap().edge;
+        let subblossom = match_edge.loc_from
+            .and_then(|node_idx| self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top)
+            .expect("match edge loc_from must have a region");
+
+        // 3. Transfer the blossom's match to subblossom
+        let blossom_match = self.flooder.region_arena[region.0].match_.clone().unwrap();
+        self.flooder.region_arena[subblossom.0].match_ = Some(Match {
+            region: blossom_match.region,
+            edge: blossom_match.edge,
+        });
+        if let Some(other) = blossom_match.region {
+            self.flooder.region_arena[other.0].match_ = Some(Match {
+                region: Some(subblossom),
+                edge: blossom_match.edge.reversed(),
+            });
+        }
+
+        // 4. Accumulate blossom radius weight
+        res.weight += self.flooder.region_arena[region.0].radius.y_intercept();
+
+        // 5. Find subblossom index in children
+        let index = children.iter().position(|c| c.region == subblossom)
+            .expect("subblossom must be in blossom_children");
+        let num_children = children.len();
+
+        // 6. Pair up remaining children starting after subblossom
+        let mut i = 0;
+        while i < num_children - 1 {
+            let re1 = &children[(index + i + 1) % num_children];
+            let re2 = &children[(index + i + 2) % num_children];
+            let r1 = re1.region;
+            let r2 = re2.region;
+            let e = re1.edge;
+            self.flooder.region_arena[r1.0].match_ = Some(Match { region: Some(r2), edge: e });
+            self.flooder.region_arena[r2.0].match_ = Some(Match { region: Some(r1), edge: e.reversed() });
+            let sub_res = self.shatter_blossom_and_extract_matches(r1);
+            *res += sub_res;
+            i += 2;
+        }
+
+        // 7. Free blossom region and return subblossom
+        self.flooder.region_arena.free(region.0);
+        subblossom
     }
 
     // -------------------------------------------------------------------
