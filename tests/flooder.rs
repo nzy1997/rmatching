@@ -1,4 +1,5 @@
 use rmatching::flooder::detector_node::DetectorNode;
+use rmatching::flooder::fill_region::GraphFillRegion;
 use rmatching::flooder::graph::{MatchingGraph, BOUNDARY_NODE};
 use rmatching::types::*;
 
@@ -51,4 +52,40 @@ fn detector_node_same_owner() {
     assert!(a.has_same_owner_as(&b));
     b.region_that_arrived_top = Some(RegionIdx(6));
     assert!(!a.has_same_owner_as(&b));
+}
+
+#[test]
+fn heir_region_on_shatter_single_level() {
+    let mut regions = vec![GraphFillRegion::default(), GraphFillRegion::default()];
+    regions[0].blossom_parent = Some(RegionIdx(1));
+
+    let mut node = DetectorNode::new();
+    node.region_that_arrived = Some(RegionIdx(0));
+    node.region_that_arrived_top = Some(RegionIdx(1));
+
+    assert_eq!(node.heir_region_on_shatter(&regions), Some(RegionIdx(0)));
+}
+
+#[test]
+fn heir_region_on_shatter_two_levels() {
+    let mut regions = vec![
+        GraphFillRegion::default(),
+        GraphFillRegion::default(),
+        GraphFillRegion::default(),
+    ];
+    regions[0].blossom_parent = Some(RegionIdx(1));
+    regions[1].blossom_parent = Some(RegionIdx(2));
+
+    let mut node = DetectorNode::new();
+    node.region_that_arrived = Some(RegionIdx(0));
+    node.region_that_arrived_top = Some(RegionIdx(2));
+
+    assert_eq!(node.heir_region_on_shatter(&regions), Some(RegionIdx(1)));
+}
+
+#[test]
+fn heir_region_on_shatter_no_region() {
+    let regions: Vec<GraphFillRegion> = vec![];
+    let node = DetectorNode::new();
+    assert_eq!(node.heir_region_on_shatter(&regions), None);
 }

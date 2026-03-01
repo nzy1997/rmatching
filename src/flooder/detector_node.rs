@@ -84,4 +84,19 @@ impl DetectorNode {
         self.wrapped_radius_cached = 0;
         self.node_event_tracker.clear();
     }
+
+    /// Walk blossom parent chain from region_that_arrived up to (but not including)
+    /// region_that_arrived_top. Returns the child region directly under top.
+    /// Used by do_blossom_shattering to find in_parent and in_child.
+    pub fn heir_region_on_shatter(&self, regions: &[GraphFillRegion]) -> Option<RegionIdx> {
+        let top = self.region_that_arrived_top?;
+        let mut r = self.region_that_arrived?;
+        loop {
+            let parent = regions[r.0 as usize].blossom_parent;
+            if parent == Some(top) || parent.is_none() {
+                return Some(r);
+            }
+            r = parent.unwrap();
+        }
+    }
 }
