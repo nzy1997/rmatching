@@ -39,6 +39,8 @@ impl AltTreeEdge {
 pub struct AltTreePruneResult {
     pub orphan_edges: Vec<AltTreeEdge>,
     pub pruned_path_region_edges: Vec<RegionEdge>,
+    /// Regions whose alt_tree_node should be cleared by the caller.
+    pub regions_to_clear: Vec<RegionIdx>,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +243,7 @@ impl AltTreeNode {
     ) -> AltTreePruneResult {
         let mut orphan_edges: Vec<AltTreeEdge> = Vec::new();
         let mut pruned_path_region_edges: Vec<RegionEdge> = Vec::new();
+        let mut regions_to_clear: Vec<RegionIdx> = Vec::new();
         let mut current = self_idx;
 
         while current != prune_parent {
@@ -278,8 +281,10 @@ impl AltTreeNode {
             // Remove current from parent's children
             unstable_erase_by_node(&mut arena[parent_idx.0].children, current);
 
-            // Clear alt_tree_node references in regions
-            // (done by caller via flooder)
+            // Track regions whose alt_tree_node must be cleared
+            // (mirrors C++: current->inner_region->alt_tree_node = nullptr)
+            regions_to_clear.push(inner);
+            regions_to_clear.push(outer);
 
             let to_free = current;
             current = parent_idx;
@@ -289,6 +294,7 @@ impl AltTreeNode {
         AltTreePruneResult {
             orphan_edges,
             pruned_path_region_edges,
+            regions_to_clear,
         }
     }
 }

@@ -99,4 +99,22 @@ impl DetectorNode {
             r = parent.unwrap();
         }
     }
+
+    /// Walk blossom parent chain from region_that_arrived to find the child
+    /// region directly under the given target blossom. Used when shattering
+    /// nested blossoms where region_that_arrived_top may point to an outer blossom.
+    pub fn heir_region_for_blossom(
+        &self,
+        regions: &[GraphFillRegion],
+        target_blossom: RegionIdx,
+    ) -> Option<RegionIdx> {
+        let mut r = self.region_that_arrived?;
+        loop {
+            let parent = regions[r.0 as usize].blossom_parent;
+            if parent == Some(target_blossom) || parent.is_none() {
+                return Some(r);
+            }
+            r = parent.unwrap();
+        }
+    }
 }

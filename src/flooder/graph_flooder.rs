@@ -1,6 +1,7 @@
 use std::num::Wrapping;
 
 use crate::interop::*;
+use crate::matcher::alt_tree::AltTreeNode;
 use crate::types::*;
 use crate::util::arena::Arena;
 use crate::util::radix_heap::{HasTime, RadixHeapQueue};
@@ -12,6 +13,7 @@ use super::graph::{MatchingGraph, BOUNDARY_NODE};
 pub struct GraphFlooder {
     pub graph: MatchingGraph,
     pub region_arena: Arena<GraphFillRegion>,
+    pub node_arena: Arena<AltTreeNode>,
     pub queue: RadixHeapQueue<FloodCheckEvent>,
     pub match_edges: Vec<CompressedEdge>,
 }
@@ -21,6 +23,7 @@ impl GraphFlooder {
         GraphFlooder {
             graph,
             region_arena: Arena::new(),
+            node_arena: Arena::new(),
             queue: RadixHeapQueue::new(),
             match_edges: Vec::new(),
         }
@@ -133,7 +136,7 @@ impl GraphFlooder {
             let neighbor_node_idx = self.graph.nodes[node_idx.0 as usize].neighbors[best_neighbor];
 
             if neighbor_node_idx == BOUNDARY_NODE {
-                return self.do_region_hit_boundary(node_idx);
+                return self.do_region_hit_boundary(node_idx, best_neighbor);
             }
             return self.do_neighbor_interaction(node_idx, best_neighbor, neighbor_node_idx);
         } else if best_neighbor != NO_NEIGHBOR {
@@ -192,20 +195,13 @@ impl GraphFlooder {
         }
     }
 
-    fn do_region_hit_boundary(&self, node_idx: NodeIdx) -> MwpmEvent {
+    fn do_region_hit_boundary(&self, node_idx: NodeIdx, boundary_neighbor_idx: usize) -> MwpmEvent {
         let node = &self.graph.nodes[node_idx.0 as usize];
-        // Boundary edge is the neighbor whose NodeIdx == BOUNDARY_NODE.
-        // Find the boundary neighbor index.
-        let boundary_idx = node
-            .neighbors
-            .iter()
-            .position(|n| *n == BOUNDARY_NODE)
-            .unwrap();
         let edge = CompressedEdge {
             loc_from: node.reached_from_source,
             loc_to: None,
             obs_mask: node.observables_crossed_from_source
-                ^ node.neighbor_observables[boundary_idx],
+                ^ node.neighbor_observables[boundary_neighbor_idx],
         };
         MwpmEvent::RegionHitBoundary {
             region: node.region_that_arrived_top.unwrap(),
@@ -448,6 +444,13 @@ impl GraphFlooder {
             return self.do_blossom_shattering(region_idx);
         }
 
+        if region.shell_area.len() == 1 && region.blossom_children.is_empty() {
+            // Degenerate implosion: inner region with single node and no blossom
+            // children implodes, generating a RegionHitRegion between the parent's
+            // outer region and this node's outer region.
+            return self.do_degenerate_implosion(region_idx);
+        }
+
         // Remove the last node from the shell
         let leaving_node_idx = {
             let region = self.region_arena.get_mut(region_idx.0);
@@ -491,6 +494,33 @@ impl GraphFlooder {
         }
     }
 
+    /// Handle the case where an inner region in an alternating tree shrinks
+    /// down to a single node with no blossom children. This generates a
+    /// RegionHitRegion event between the parent's outer region and this
+    /// node's outer region, effectively collapsing the tree path.
+    fn do_degenerate_implosion(&self, region_idx: RegionIdx) -> MwpmEvent {
+        let region = &self.region_arena[region_idx.0];
+        let alt_node = region.alt_tree_node.unwrap();
+        let parent_alt = self.node_arena[alt_node.0]
+            .parent
+            .as_ref()
+            .unwrap()
+            .alt_tree_node;
+        let parent_outer = self.node_arena[parent_alt.0].outer_region.unwrap();
+        let this_outer = self.node_arena[alt_node.0].outer_region.unwrap();
+        let parent_edge = &self.node_arena[alt_node.0].parent.as_ref().unwrap().edge;
+        let i2o_edge = self.node_arena[alt_node.0].inner_to_outer_edge;
+        MwpmEvent::RegionHitRegion {
+            region1: parent_outer,
+            region2: this_outer,
+            edge: CompressedEdge {
+                loc_from: parent_edge.loc_to,
+                loc_to: i2o_edge.loc_to,
+                obs_mask: i2o_edge.obs_mask ^ parent_edge.obs_mask,
+            },
+        }
+    }
+
     // ---------------------------------------------------------------
     // Reset
     // ---------------------------------------------------------------
@@ -500,6 +530,7 @@ impl GraphFlooder {
             node.reset();
         }
         self.region_arena.clear();
+        self.node_arena.clear();
         self.queue.reset();
         self.match_edges.clear();
     }

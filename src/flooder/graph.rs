@@ -53,17 +53,18 @@ impl MatchingGraph {
             self.negative_weight_sum += weight as TotalWeight;
         }
 
+        let mut obs_mask: ObsMask = 0;
+        for &obs in observables {
+            if obs < 64 {
+                obs_mask ^= 1u64 << obs;
+            }
+        }
+
         if u == v {
             return; // skip self-loops
         }
 
         let abs_weight = weight.unsigned_abs();
-        let mut obs_mask: ObsMask = 0;
-        if self.num_observables <= 64 {
-            for &obs in observables {
-                obs_mask ^= 1u64 << obs;
-            }
-        }
 
         // Add u -> v
         self.nodes[u].neighbors.push(NodeIdx(v as u32));
@@ -96,8 +97,8 @@ impl MatchingGraph {
 
         let abs_weight = weight.unsigned_abs();
         let mut obs_mask: ObsMask = 0;
-        if self.num_observables <= 64 {
-            for &obs in observables {
+        for &obs in observables {
+            if obs < 64 {
                 obs_mask ^= 1u64 << obs;
             }
         }

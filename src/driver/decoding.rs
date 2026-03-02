@@ -238,31 +238,51 @@ fn collect_shell_nodes_recursive(mwpm: &Mwpm, region: RegionIdx, out: &mut Vec<N
 }
 
 fn extract_match_edges(mwpm: &mut Mwpm, detection_events: &[usize]) -> Vec<(i64, i64)> {
-    let mut edges = Vec::new();
+    let mut match_edges = Vec::new();
     for &i in detection_events {
         if i < mwpm.flooder.graph.nodes.len()
             && mwpm.flooder.graph.nodes[i].region_that_arrived.is_some()
         {
             let top = mwpm.flooder.graph.nodes[i].region_that_arrived_top.unwrap();
-            let region = &mwpm.flooder.region_arena[top.0];
-            if let Some(ref m) = region.match_ {
-                let from = i as i64;
-                let to = match m.edge.loc_to {
-                    Some(node_idx) => node_idx.0 as i64,
-                    None => -1,
-                };
-                // Avoid duplicate edges: only add if from <= to (or boundary)
-                if to == -1 || from <= to {
-                    edges.push((from, to));
-                }
+            // Collect shell-area nodes to reset after shattering
+            let mut nodes_to_clean = collect_shell_nodes(mwpm, top);
+            let match_region = mwpm.flooder.region_arena[top.0]
+                .match_
+                .as_ref()
+                .and_then(|m| m.region);
+            if let Some(mr) = match_region {
+                nodes_to_clean.extend(collect_shell_nodes(mwpm, mr));
+            }
+            // Shatter to collect compressed edges
+            mwpm.shatter_blossom_and_extract_match_edges(top, &mut match_edges);
+            // Reset nodes to prevent double-processing
+            for node_idx in nodes_to_clean {
+                mwpm.flooder.graph.nodes[node_idx.0 as usize].reset();
             }
         }
     }
+
+    // Convert CompressedEdge pairs to (i64, i64) detection event pairs
+    let mut edges = Vec::new();
+    for ce in &match_edges {
+        let from = ce.loc_from.map(|n| n.0 as i64).unwrap_or(-1);
+        let to = ce.loc_to.map(|n| n.0 as i64).unwrap_or(-1);
+        // Normalize: smaller first (except boundary -1)
+        let (a, b) = if to == -1 || (from != -1 && from <= to) {
+            (from, to)
+        } else {
+            (to, from)
+        };
+        edges.push((a, b));
+    }
+    // Deduplicate
+    edges.sort();
+    edges.dedup();
     edges
 }
 
 fn obs_mask_to_predictions(obs_mask: ObsMask, num_observables: usize) -> Vec<u8> {
     (0..num_observables)
-        .map(|i| ((obs_mask >> i) & 1) as u8)
+        .map(|i| if i < 64 { ((obs_mask >> i) & 1) as u8 } else { 0 })
         .collect()
 }

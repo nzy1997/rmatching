@@ -129,7 +129,7 @@ fn mwpm_reset() {
     mwpm.reset();
 
     // After reset, arenas should be empty
-    assert_eq!(mwpm.node_arena.len(), 0);
+    assert_eq!(mwpm.flooder.node_arena.len(), 0);
     assert!(mwpm.flooder.graph.nodes[0].region_that_arrived.is_none());
 }
 

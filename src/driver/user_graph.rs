@@ -185,17 +185,39 @@ impl UserGraph {
             MatchingGraph::new(self.nodes.len(), self.num_observables);
         let norm = self.get_edge_weight_normalising_constant(num_distinct_weights);
 
+        // Collect boundary edges per node, keeping only the smallest signed weight
+        // (matches PyMatching's parallel boundary edge deduplication).
+        let num_nodes = self.nodes.len();
+        let mut has_boundary_edge = vec![false; num_nodes];
+        let mut boundary_edge_weights: Vec<SignedWeight> = vec![0; num_nodes];
+        let mut boundary_edge_observables: Vec<Vec<usize>> = vec![Vec::new(); num_nodes];
+
         for e in &self.edges {
             let w = (e.weight * norm).round() as SignedWeight * 2;
             let n1_boundary = self.is_boundary_node(e.node1);
             let n2_boundary = self.is_boundary_node(e.node2);
 
             if n2_boundary && !n1_boundary {
-                mg.add_boundary_edge(e.node1, w, &e.observable_indices);
+                if !has_boundary_edge[e.node1] || boundary_edge_weights[e.node1] > w {
+                    boundary_edge_weights[e.node1] = w;
+                    boundary_edge_observables[e.node1] = e.observable_indices.clone();
+                    has_boundary_edge[e.node1] = true;
+                }
             } else if n1_boundary && !n2_boundary {
-                mg.add_boundary_edge(e.node2, w, &e.observable_indices);
+                if !has_boundary_edge[e.node2] || boundary_edge_weights[e.node2] > w {
+                    boundary_edge_weights[e.node2] = w;
+                    boundary_edge_observables[e.node2] = e.observable_indices.clone();
+                    has_boundary_edge[e.node2] = true;
+                }
             } else if !n1_boundary {
                 mg.add_edge(e.node1, e.node2, w, &e.observable_indices);
+            }
+        }
+
+        // Now add the deduplicated boundary edges
+        for i in 0..num_nodes {
+            if has_boundary_edge[i] {
+                mg.add_boundary_edge(i, boundary_edge_weights[i], &boundary_edge_observables[i]);
             }
         }
 
@@ -220,19 +242,41 @@ impl UserGraph {
             SearchGraph::new(self.nodes.len(), self.num_observables);
         let norm = self.get_edge_weight_normalising_constant(num_distinct_weights);
 
+        // Collect boundary edges per node, keeping only the smallest signed weight
+        let num_nodes = self.nodes.len();
+        let mut has_boundary_edge = vec![false; num_nodes];
+        let mut boundary_edge_weights: Vec<SignedWeight> = vec![0; num_nodes];
+        let mut boundary_edge_obs: Vec<ObsMask> = vec![0; num_nodes];
+
         for e in &self.edges {
             let w_signed = (e.weight * norm).round() as SignedWeight * 2;
-            let w = w_signed.unsigned_abs();
             let obs = Self::obs_mask(&e.observable_indices);
             let n1_boundary = self.is_boundary_node(e.node1);
             let n2_boundary = self.is_boundary_node(e.node2);
 
             if n2_boundary && !n1_boundary {
-                sg.add_boundary_edge(e.node1, w, obs);
+                if !has_boundary_edge[e.node1] || boundary_edge_weights[e.node1] > w_signed {
+                    boundary_edge_weights[e.node1] = w_signed;
+                    boundary_edge_obs[e.node1] = obs;
+                    has_boundary_edge[e.node1] = true;
+                }
             } else if n1_boundary && !n2_boundary {
-                sg.add_boundary_edge(e.node2, w, obs);
+                if !has_boundary_edge[e.node2] || boundary_edge_weights[e.node2] > w_signed {
+                    boundary_edge_weights[e.node2] = w_signed;
+                    boundary_edge_obs[e.node2] = obs;
+                    has_boundary_edge[e.node2] = true;
+                }
             } else if !n1_boundary {
+                let w = w_signed.unsigned_abs();
                 sg.add_edge(e.node1, e.node2, w, obs);
+            }
+        }
+
+        // Now add the deduplicated boundary edges
+        for i in 0..num_nodes {
+            if has_boundary_edge[i] {
+                let w = boundary_edge_weights[i].unsigned_abs();
+                sg.add_boundary_edge(i, w, boundary_edge_obs[i]);
             }
         }
 
