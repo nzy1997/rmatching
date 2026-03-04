@@ -45,7 +45,7 @@ mod bench {
             .collect()
     }
 
-    /// Remove spaces that appear inside parentheses so that
+    /// Remove spaces and tabs that appear inside parentheses so that
     /// "DETECTOR(2, 4, 0) rec[-1]" becomes "DETECTOR(2,4,0) rec[-1]".
     /// This lets the rstim parser keep argument lists as single whitespace tokens.
     pub fn normalize_paren_spaces(text: &str) -> String {
@@ -146,6 +146,29 @@ mod bench {
             let preds = vec![vec![0u8, 0u8]];  // both wrong
             assert_eq!(count_logical_errors(&preds, &obs), 1);
         }
+
+        #[test]
+        fn test_normalize_paren_spaces_basic() {
+            assert_eq!(
+                normalize_paren_spaces("DETECTOR(2, 4, 0) rec[-1]"),
+                "DETECTOR(2,4,0) rec[-1]"
+            );
+        }
+
+        #[test]
+        fn test_normalize_paren_spaces_no_parens() {
+            let s = "H 0 1 2\nCNOT 0 1";
+            assert_eq!(normalize_paren_spaces(s), s);
+        }
+
+        #[test]
+        fn test_normalize_paren_spaces_preserves_newlines() {
+            let s = "DETECTOR(1, 2) rec[-1]\nDETECTOR(3, 4) rec[-2]";
+            assert_eq!(
+                normalize_paren_spaces(s),
+                "DETECTOR(1,2) rec[-1]\nDETECTOR(3,4) rec[-2]"
+            );
+        }
     }
 }
 
@@ -217,10 +240,15 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Convert detections to syndromes (use actual BitTable major count, not DEM count,
-    // to avoid an out-of-bounds access when they differ; layout: major=detector, minor=shot)
-    let actual_detectors = output.detections.num_major().min(num_detectors);
-    let syndromes = detections_to_syndromes(&output.detections, actual_detectors);
+    // Convert detections to syndromes (layout: major=detector, minor=shot)
+    let sampler_dets = output.detections.num_major();
+    if sampler_dets != num_detectors {
+        eprintln!(
+            "Warning: DEM declares {} detectors but sampler produced {}",
+            num_detectors, sampler_dets
+        );
+    }
+    let syndromes = detections_to_syndromes(&output.detections, num_detectors);
 
     // Decode (timed)
     let t0 = Instant::now();
