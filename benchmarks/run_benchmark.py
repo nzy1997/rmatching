@@ -26,9 +26,10 @@ import pymatching
 import stim
 
 
-STIM_GLOB = "PyMatching/benchmarks/surface_codes/**/*.stim"
-BENCH_BINARY = "./target/release/rmatching_bench"
-RESULTS_CSV = "benchmarks/results.csv"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+STIM_GLOB = str(_REPO_ROOT / "PyMatching/benchmarks/surface_codes/**/*.stim")
+BENCH_BINARY = str(_REPO_ROOT / "target/release/rmatching_bench")
+RESULTS_CSV = str(_REPO_ROOT / "benchmarks/results.csv")
 CSV_HEADER = ["decoder", "p", "d", "decode_us_per_round", "logical_error_rate"]
 
 
@@ -36,7 +37,8 @@ def parse_filename(path: Path):
     """Extract (p, d) from a surface code .stim filename."""
     m = re.search(r"_p_([\d.]+)_d_(\d+)\.stim$", path.name)
     if not m:
-        # Try format: surface_code_rotated_memory_x_{d}_{p}.stim
+        # Actual PyMatching benchmark filenames use format: {name}_{d}_{p}.stim
+        # e.g. "surface_code_rotated_memory_x_5_0.001.stim" -> (p=0.001, d=5)
         m2 = re.search(r"_(\d+)_([\d.]+)\.stim$", path.name)
         if m2:
             return float(m2.group(2)), int(m2.group(1))
@@ -82,7 +84,10 @@ def run_rmatching(stim_path: Path, num_shots: int) -> dict:
             f"rmatching_bench failed for {stim_path.name}:\n{result.stderr}"
         )
     line = result.stdout.strip()
-    decoder, p, d, us_per_round, ler = line.split(",")
+    parts = line.split(",")
+    if len(parts) != 5:
+        raise RuntimeError(f"Unexpected output from rmatching_bench: {line!r}")
+    decoder, p, d, us_per_round, ler = parts
     return {
         "decoder": decoder,
         "p": float(p),
