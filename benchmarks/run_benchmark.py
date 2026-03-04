@@ -146,8 +146,11 @@ def main():
         rows.append(pm_row)
 
         # rmatching
-        rm_row = run_rmatching(stim_path, num_shots)
-        rows.append(rm_row)
+        try:
+            rm_row = run_rmatching(stim_path, num_shots)
+            rows.append(rm_row)
+        except RuntimeError as e:
+            print(f"\n  [rmatching FAILED: {e}]", file=sys.stderr)
 
     print()  # newline after progress
 
