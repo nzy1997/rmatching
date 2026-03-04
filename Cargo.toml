@@ -7,11 +7,12 @@ edition = "2024"
 
 [features]
 rsinter = ["dep:rsinter", "dep:rstim"]
-bench = ["dep:rstim"]
+bench = ["dep:rstim", "dep:rand"]
 
 [dependencies]
 rsinter = { git = "https://github.com/nzy1997/rstim.git", optional = true }
 rstim = { git = "https://github.com/nzy1997/rstim.git", optional = true }
+rand = { version = "0.8", optional = true }
 
 [patch."https://github.com/nzy1997/rstim.git"]
 rstim = { path = "../rstim" }
