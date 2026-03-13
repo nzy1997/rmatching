@@ -661,46 +661,31 @@ impl Mwpm {
         self.flooder.region_arena[blossom_idx.0].radius =
             crate::util::varying::VaryingCT::growing_varying_with_zero_distance_at_time(cur_time);
 
-        // Recursively collect ALL nodes in the blossom hierarchy
-        // (mirrors C++ do_op_for_each_node_in_total_area)
-        let all_nodes = Self::collect_total_area_nodes(&self.flooder.region_arena, blossom_idx);
-
-        // Update node ownership and wrapped radius cache
-        for &node_idx in &all_nodes {
-            self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top =
-                Some(blossom_idx);
-            self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached =
-                self.flooder.graph.nodes[node_idx.0 as usize]
-                    .compute_wrapped_radius(self.flooder.region_arena.items());
-        }
-
-        // Reschedule events for all nodes in the blossom
-        for &node_idx in &all_nodes {
-            self.flooder.reschedule_events_at_detector_node(node_idx);
-        }
+        self.update_blossom_area_and_reschedule(blossom_idx, blossom_idx);
 
         blossom_idx
     }
 
-    /// Recursively collect all node indices in a region's total area
-    /// (shell_area + all nested blossom children).
-    fn collect_total_area_nodes(
-        arena: &crate::util::arena::Arena<super::super::flooder::fill_region::GraphFillRegion>,
+    fn update_blossom_area_and_reschedule(
+        &mut self,
         region: RegionIdx,
-    ) -> Vec<NodeIdx> {
-        let mut nodes = Vec::new();
-        Self::collect_total_area_recursive(arena, region, &mut nodes);
-        nodes
-    }
-
-    fn collect_total_area_recursive(
-        arena: &crate::util::arena::Arena<super::super::flooder::fill_region::GraphFillRegion>,
-        region: RegionIdx,
-        out: &mut Vec<NodeIdx>,
+        blossom_top: RegionIdx,
     ) {
-        out.extend(arena[region.0].shell_area.iter().copied());
-        for child in &arena[region.0].blossom_children {
-            Self::collect_total_area_recursive(arena, child.region, out);
+        let shell_len = self.flooder.region_arena[region.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.flooder.region_arena[region.0].shell_area[i];
+            self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top =
+                Some(blossom_top);
+            self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached =
+                self.flooder.graph.nodes[node_idx.0 as usize]
+                    .compute_wrapped_radius(self.flooder.region_arena.items());
+            self.flooder.reschedule_events_at_detector_node(node_idx);
+        }
+
+        let child_len = self.flooder.region_arena[region.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.flooder.region_arena[region.0].blossom_children[i].region;
+            self.update_blossom_area_and_reschedule(child_region, blossom_top);
         }
     }
 
@@ -791,7 +776,8 @@ impl Mwpm {
         region: RegionIdx,
         res: &mut MatchingResult,
     ) -> RegionIdx {
-        let children: Vec<RegionEdge> = self.flooder.region_arena[region.0].blossom_children.clone();
+        let children: Vec<RegionEdge> =
+            std::mem::take(&mut self.flooder.region_arena[region.0].blossom_children);
 
         // 1. Clear blossom parent on all children so detector nodes point back
         //    to the direct child blossom that survives the shatter.
@@ -923,7 +909,8 @@ impl Mwpm {
         region: RegionIdx,
         match_edges: &mut Vec<CompressedEdge>,
     ) -> RegionIdx {
-        let children: Vec<RegionEdge> = self.flooder.region_arena[region.0].blossom_children.clone();
+        let children: Vec<RegionEdge> =
+            std::mem::take(&mut self.flooder.region_arena[region.0].blossom_children);
 
         for child in &children {
             self.clear_region_blossom_parent(child.region, false);
