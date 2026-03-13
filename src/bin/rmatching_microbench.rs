@@ -68,6 +68,13 @@ mod bench {
         }
     }
 
+    pub fn process_request_json(input: &str) -> String {
+        let req: BenchmarkRequest =
+            serde_json::from_str(input).expect("benchmark request JSON must parse");
+        let resp = run_request(req);
+        serde_json::to_string(&resp).expect("benchmark response JSON must serialize")
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -95,11 +102,36 @@ mod bench {
             assert!(resp.build_us >= 0.0);
             assert!(resp.mean_decode_us >= 0.0);
         }
+
+        #[test]
+        fn process_request_json_serializes_predictions_and_stats() {
+            let input = serde_json::json!({
+                "dem": "error(0.1) D0 D1\nerror(0.05) D0\nerror(0.05) D1\n",
+                "syndromes": [[0, 0], [1, 1]],
+                "warmup_rounds": 0,
+                "measure_rounds": 1,
+            })
+            .to_string();
+
+            let output = process_request_json(&input);
+            assert!(output.contains("\"predictions\""));
+            assert!(output.contains("\"mean_decode_us\""));
+        }
     }
 }
 
 #[cfg(not(feature = "bench"))]
-fn main() {}
+fn main() {
+    eprintln!("Build with --features bench to use rmatching_microbench");
+    std::process::exit(1);
+}
 
 #[cfg(feature = "bench")]
-fn main() {}
+fn main() {
+    use bench::process_request_json;
+    use std::io::{self, Read};
+
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    println!("{}", process_request_json(&input));
+}
