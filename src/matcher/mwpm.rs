@@ -565,30 +565,32 @@ impl Mwpm {
         child_idx
     }
 
-    fn collect_descendant_regions(&self, region: RegionIdx, out: &mut Vec<RegionIdx>) {
-        out.push(region);
-        for child in &self.flooder.region_arena[region.0].blossom_children {
-            self.collect_descendant_regions(child.region, out);
-        }
-    }
-
     fn wrap_region_into_blossom(&mut self, region: RegionIdx, new_blossom_parent_and_top: RegionIdx) {
         self.flooder.region_arena[region.0].blossom_parent = Some(new_blossom_parent_and_top);
+        self.wrap_region_descendants_into_blossom(region, new_blossom_parent_and_top);
+    }
 
-        let mut descendants = Vec::new();
-        self.collect_descendant_regions(region, &mut descendants);
-        for descendant in descendants {
-            let shell = self.flooder.region_arena[descendant.0].shell_area.clone();
-            self.flooder.region_arena[descendant.0].blossom_parent_top =
+    fn wrap_region_descendants_into_blossom(
+        &mut self,
+        region: RegionIdx,
+        new_blossom_parent_and_top: RegionIdx,
+    ) {
+        self.flooder.region_arena[region.0].blossom_parent_top = Some(new_blossom_parent_and_top);
+
+        let shell_len = self.flooder.region_arena[region.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.flooder.region_arena[region.0].shell_area[i];
+            self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top =
                 Some(new_blossom_parent_and_top);
-            for node_idx in shell {
-                self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top =
-                    Some(new_blossom_parent_and_top);
-                let wrapped_radius = self.flooder.graph.nodes[node_idx.0 as usize]
-                    .compute_wrapped_radius(self.flooder.region_arena.items());
-                self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached =
-                    wrapped_radius;
-            }
+            let wrapped_radius = self.flooder.graph.nodes[node_idx.0 as usize]
+                .compute_wrapped_radius(self.flooder.region_arena.items());
+            self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached = wrapped_radius;
+        }
+
+        let child_len = self.flooder.region_arena[region.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.flooder.region_arena[region.0].blossom_children[i].region;
+            self.wrap_region_descendants_into_blossom(child_region, new_blossom_parent_and_top);
         }
     }
 
@@ -598,22 +600,37 @@ impl Mwpm {
         recompute_wrapped_radius: bool,
     ) {
         self.flooder.region_arena[region.0].blossom_parent = None;
+        self.clear_region_descendant_blossom_parent(region, region, recompute_wrapped_radius);
+    }
 
-        let mut descendants = Vec::new();
-        self.collect_descendant_regions(region, &mut descendants);
-        for descendant in descendants {
-            let shell = self.flooder.region_arena[descendant.0].shell_area.clone();
-            self.flooder.region_arena[descendant.0].blossom_parent_top = Some(region);
-            for node_idx in shell {
-                self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top =
-                    Some(region);
-                if recompute_wrapped_radius {
-                    let wrapped_radius = self.flooder.graph.nodes[node_idx.0 as usize]
-                        .compute_wrapped_radius(self.flooder.region_arena.items());
-                    self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached =
-                        wrapped_radius;
-                }
+    fn clear_region_descendant_blossom_parent(
+        &mut self,
+        region: RegionIdx,
+        new_top: RegionIdx,
+        recompute_wrapped_radius: bool,
+    ) {
+        self.flooder.region_arena[region.0].blossom_parent_top = Some(new_top);
+
+        let shell_len = self.flooder.region_arena[region.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.flooder.region_arena[region.0].shell_area[i];
+            self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top = Some(new_top);
+            if recompute_wrapped_radius {
+                let wrapped_radius = self.flooder.graph.nodes[node_idx.0 as usize]
+                    .compute_wrapped_radius(self.flooder.region_arena.items());
+                self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached =
+                    wrapped_radius;
             }
+        }
+
+        let child_len = self.flooder.region_arena[region.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.flooder.region_arena[region.0].blossom_children[i].region;
+            self.clear_region_descendant_blossom_parent(
+                child_region,
+                new_top,
+                recompute_wrapped_radius,
+            );
         }
     }
 

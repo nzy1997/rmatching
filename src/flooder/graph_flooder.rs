@@ -383,16 +383,33 @@ impl GraphFlooder {
     // Region state transitions
     // ---------------------------------------------------------------
 
-    fn total_area_nodes(&self, region_idx: RegionIdx) -> Vec<NodeIdx> {
-        let mut nodes = Vec::new();
-        self.collect_total_area_recursive(region_idx, &mut nodes);
-        nodes
+    fn reschedule_total_area_nodes(&mut self, region_idx: RegionIdx) {
+        let shell_len = self.region_arena[region_idx.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.region_arena[region_idx.0].shell_area[i];
+            self.reschedule_events_at_detector_node(node_idx);
+        }
+
+        let child_len = self.region_arena[region_idx.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.region_arena[region_idx.0].blossom_children[i].region;
+            self.reschedule_total_area_nodes(child_region);
+        }
     }
 
-    fn collect_total_area_recursive(&self, region_idx: RegionIdx, out: &mut Vec<NodeIdx>) {
-        out.extend(self.region_arena[region_idx.0].shell_area.iter().copied());
-        for child in &self.region_arena[region_idx.0].blossom_children {
-            self.collect_total_area_recursive(child.region, out);
+    fn clear_total_area_node_events(&mut self, region_idx: RegionIdx) {
+        let shell_len = self.region_arena[region_idx.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.region_arena[region_idx.0].shell_area[i];
+            self.graph.nodes[node_idx.0 as usize]
+                .node_event_tracker
+                .set_no_desired_event();
+        }
+
+        let child_len = self.region_arena[region_idx.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.region_arena[region_idx.0].blossom_children[i].region;
+            self.clear_total_area_node_events(child_region);
         }
     }
 
@@ -402,9 +419,7 @@ impl GraphFlooder {
             region.radius = region.radius.then_growing_at_time(self.queue.cur_time);
             region.shrink_event_tracker.set_no_desired_event();
         }
-        for node_idx in self.total_area_nodes(region_idx) {
-            self.reschedule_events_at_detector_node(node_idx);
-        }
+        self.reschedule_total_area_nodes(region_idx);
     }
 
     pub fn set_region_frozen(&mut self, region_idx: RegionIdx) {
@@ -416,9 +431,7 @@ impl GraphFlooder {
             was_shrinking
         };
         if was_shrinking {
-            for node_idx in self.total_area_nodes(region_idx) {
-                self.reschedule_events_at_detector_node(node_idx);
-            }
+            self.reschedule_total_area_nodes(region_idx);
         }
     }
 
@@ -430,11 +443,7 @@ impl GraphFlooder {
         // Schedule tentative shrink event
         self.schedule_tentative_shrink_event(region_idx);
         // No node events while shrinking
-        for node_idx in self.total_area_nodes(region_idx) {
-            self.graph.nodes[node_idx.0 as usize]
-                .node_event_tracker
-                .set_no_desired_event();
-        }
+        self.clear_total_area_node_events(region_idx);
     }
 
     fn schedule_tentative_shrink_event(&mut self, region_idx: RegionIdx) {
@@ -586,6 +595,7 @@ impl GraphFlooder {
 mod tests {
     use super::*;
     use crate::flooder::detector_node::DetectorNode;
+    use crate::interop::{CompressedEdge, RegionEdge};
 
     #[test]
     fn reset_only_visits_touched_nodes() {
@@ -603,5 +613,47 @@ mod tests {
         flooder.reset();
 
         assert_eq!(DetectorNode::reset_call_count(), 3);
+    }
+
+    #[test]
+    fn set_region_shrinking_clears_descendant_node_events_for_blossom() {
+        let mut graph = MatchingGraph::new(2, 0);
+        graph.add_edge(0, 1, 5, &[]);
+        graph.add_boundary_edge(0, 9, &[]);
+        graph.add_boundary_edge(1, 9, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        let left = flooder.create_detection_event(NodeIdx(0));
+        let right = flooder.create_detection_event(NodeIdx(1));
+
+        assert!(flooder.graph.nodes[0].node_event_tracker.has_desired_time);
+        assert!(flooder.graph.nodes[1].node_event_tracker.has_desired_time);
+
+        let blossom = RegionIdx(flooder.region_arena.alloc());
+        flooder.region_arena[blossom.0].radius =
+            VaryingCT::growing_varying_with_zero_distance_at_time(flooder.queue.cur_time);
+        flooder.region_arena[blossom.0].blossom_parent_top = Some(blossom);
+        flooder.region_arena[blossom.0].blossom_children = vec![
+            RegionEdge {
+                region: left,
+                edge: CompressedEdge::empty(),
+            },
+            RegionEdge {
+                region: right,
+                edge: CompressedEdge::empty(),
+            },
+        ];
+
+        flooder.region_arena[left.0].blossom_parent = Some(blossom);
+        flooder.region_arena[left.0].blossom_parent_top = Some(blossom);
+        flooder.region_arena[right.0].blossom_parent = Some(blossom);
+        flooder.region_arena[right.0].blossom_parent_top = Some(blossom);
+        flooder.graph.nodes[0].region_that_arrived_top = Some(blossom);
+        flooder.graph.nodes[1].region_that_arrived_top = Some(blossom);
+
+        flooder.set_region_shrinking(blossom);
+
+        assert!(!flooder.graph.nodes[0].node_event_tracker.has_desired_time);
+        assert!(!flooder.graph.nodes[1].node_event_tracker.has_desired_time);
     }
 }
