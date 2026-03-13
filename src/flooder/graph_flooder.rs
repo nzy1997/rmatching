@@ -16,6 +16,7 @@ pub struct GraphFlooder {
     pub node_arena: Arena<AltTreeNode>,
     pub queue: RadixHeapQueue<FloodCheckEvent>,
     pub match_edges: Vec<CompressedEdge>,
+    pub node_cleanup_buffer: Vec<NodeIdx>,
     touched_nodes: Vec<NodeIdx>,
     node_was_touched: Vec<bool>,
 }
@@ -29,6 +30,7 @@ impl GraphFlooder {
             node_arena: Arena::new(),
             queue: RadixHeapQueue::new(),
             match_edges: Vec::new(),
+            node_cleanup_buffer: Vec::new(),
             touched_nodes: Vec::new(),
         }
     }
@@ -606,6 +608,7 @@ impl GraphFlooder {
             .recycle_touched(AltTreeNode::reset_for_reuse);
         self.queue.reset();
         self.match_edges.clear();
+        self.node_cleanup_buffer.clear();
     }
 
     // ---------------------------------------------------------------

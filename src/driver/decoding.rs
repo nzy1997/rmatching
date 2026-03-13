@@ -215,6 +215,7 @@ fn apply_negative_weight_events_into(
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use crate::test_alloc::{allocation_count, reset_allocation_count};
 
     #[test]
     fn syndrome_to_detection_events_into_reuses_buffer() {
@@ -271,6 +272,37 @@ mod tests {
             decode_events_to_prediction(mwpm, &effective_events, num_observables, neg_obs_mask);
         assert_eq!(actual, expected);
     }
+
+    #[test]
+    fn shatter_and_extract_repeated_decode_still_allocates() {
+        let mut matching = Matching::new();
+        matching.add_edge(0, 1, 1.0, &[0], 0.1);
+        matching.add_edge(2, 3, 1.0, &[], 0.1);
+        matching.add_edge(1, 2, 3.0, &[], 0.1);
+        matching.add_boundary_edge(0, 5.0, &[], 0.05);
+        matching.add_boundary_edge(3, 5.0, &[], 0.05);
+
+        let syndrome = vec![1u8, 1u8, 1u8, 1u8];
+        let _ = matching.decode(&syndrome);
+
+        let mwpm = matching.user_graph.get_mwpm();
+        let mut detection_events = Vec::new();
+        let mut effective_events = Vec::new();
+        syndrome_to_detection_events_into(&syndrome, &mut detection_events);
+        apply_negative_weight_events_into(
+            &detection_events,
+            &mwpm.flooder.graph.negative_weight_detection_events_set,
+            &mwpm.flooder.graph.is_user_graph_boundary_node,
+            &mut effective_events,
+        );
+
+        process_timeline_until_completion(mwpm, &effective_events);
+        reset_allocation_count();
+        let _ = shatter_and_extract(mwpm, &effective_events);
+        mwpm.reset();
+
+        assert_eq!(allocation_count(), 0);
+    }
 }
 
 fn process_timeline_until_completion(mwpm: &mut Mwpm, detection_events: &[usize]) {
@@ -298,6 +330,7 @@ fn process_timeline_until_completion(mwpm: &mut Mwpm, detection_events: &[usize]
 
 fn shatter_and_extract(mwpm: &mut Mwpm, detection_events: &[usize]) -> MatchingResult {
     let mut res = MatchingResult::new();
+    let mut nodes_to_clean = std::mem::take(&mut mwpm.flooder.node_cleanup_buffer);
     for &i in detection_events {
         if i < mwpm.flooder.graph.nodes.len()
             && mwpm.flooder.graph.nodes[i].region_that_arrived.is_some()
@@ -306,64 +339,73 @@ fn shatter_and_extract(mwpm: &mut Mwpm, detection_events: &[usize]) -> MatchingR
             // Collect shell-area nodes to reset *after* shattering, since
             // pair_and_shatter_subblossoms needs region_that_arrived_top to
             // locate sub-blossoms.
-            let mut nodes_to_clean = collect_shell_nodes(mwpm, top);
+            nodes_to_clean.clear();
+            collect_shell_nodes_recursive(mwpm.flooder.region_arena.items(), top, &mut nodes_to_clean);
             let match_region = mwpm.flooder.region_arena[top.0]
                 .match_
                 .as_ref()
                 .and_then(|m| m.region);
             if let Some(mr) = match_region {
-                nodes_to_clean.extend(collect_shell_nodes(mwpm, mr));
+                collect_shell_nodes_recursive(
+                    mwpm.flooder.region_arena.items(),
+                    mr,
+                    &mut nodes_to_clean,
+                );
             }
             // Shattering reads region_that_arrived_top, so run it first.
             res += mwpm.shatter_blossom_and_extract_matches(top);
             // Now reset the nodes to prevent double-processing.
-            for node_idx in nodes_to_clean {
+            for node_idx in nodes_to_clean.drain(..) {
                 mwpm.flooder.graph.nodes[node_idx.0 as usize].reset();
             }
         }
     }
+    mwpm.flooder.node_cleanup_buffer = nodes_to_clean;
     res
 }
 
-/// Collect all detector-node indices in a region's shell area (and its
-/// blossom children, recursively) so they can be reset after shattering.
-fn collect_shell_nodes(mwpm: &Mwpm, region: RegionIdx) -> Vec<NodeIdx> {
-    let mut nodes = Vec::new();
-    collect_shell_nodes_recursive(mwpm, region, &mut nodes);
-    nodes
-}
-
-fn collect_shell_nodes_recursive(mwpm: &Mwpm, region: RegionIdx, out: &mut Vec<NodeIdx>) {
-    out.extend(mwpm.flooder.region_arena[region.0].shell_area.iter().copied());
-    for child in &mwpm.flooder.region_arena[region.0].blossom_children {
-        collect_shell_nodes_recursive(mwpm, child.region, out);
+fn collect_shell_nodes_recursive(
+    regions: &[crate::flooder::fill_region::GraphFillRegion],
+    region: RegionIdx,
+    out: &mut Vec<NodeIdx>,
+) {
+    out.extend(regions[region.0 as usize].shell_area.iter().copied());
+    for child in &regions[region.0 as usize].blossom_children {
+        collect_shell_nodes_recursive(regions, child.region, out);
     }
 }
 
 fn extract_match_edges(mwpm: &mut Mwpm, detection_events: &[usize]) -> Vec<(i64, i64)> {
     let mut match_edges = Vec::new();
+    let mut nodes_to_clean = std::mem::take(&mut mwpm.flooder.node_cleanup_buffer);
     for &i in detection_events {
         if i < mwpm.flooder.graph.nodes.len()
             && mwpm.flooder.graph.nodes[i].region_that_arrived.is_some()
         {
             let top = mwpm.flooder.graph.nodes[i].region_that_arrived_top.unwrap();
             // Collect shell-area nodes to reset after shattering
-            let mut nodes_to_clean = collect_shell_nodes(mwpm, top);
+            nodes_to_clean.clear();
+            collect_shell_nodes_recursive(mwpm.flooder.region_arena.items(), top, &mut nodes_to_clean);
             let match_region = mwpm.flooder.region_arena[top.0]
                 .match_
                 .as_ref()
                 .and_then(|m| m.region);
             if let Some(mr) = match_region {
-                nodes_to_clean.extend(collect_shell_nodes(mwpm, mr));
+                collect_shell_nodes_recursive(
+                    mwpm.flooder.region_arena.items(),
+                    mr,
+                    &mut nodes_to_clean,
+                );
             }
             // Shatter to collect compressed edges
             mwpm.shatter_blossom_and_extract_match_edges(top, &mut match_edges);
             // Reset nodes to prevent double-processing
-            for node_idx in nodes_to_clean {
+            for node_idx in nodes_to_clean.drain(..) {
                 mwpm.flooder.graph.nodes[node_idx.0 as usize].reset();
             }
         }
     }
+    mwpm.flooder.node_cleanup_buffer = nodes_to_clean;
 
     // Convert CompressedEdge pairs to (i64, i64) detection event pairs
     let mut edges = Vec::new();
