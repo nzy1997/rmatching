@@ -2,12 +2,14 @@ use crate::interop::QueuedEventTracker;
 use crate::types::*;
 use crate::util::varying::VaryingCT;
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use super::fill_region::GraphFillRegion;
 
 #[cfg(test)]
-static RESET_CALLS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static RESET_CALLS: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Debug, Clone)]
 pub struct DetectorNode {
@@ -82,7 +84,7 @@ impl DetectorNode {
 
     pub fn reset(&mut self) {
         #[cfg(test)]
-        RESET_CALLS.fetch_add(1, Ordering::Relaxed);
+        RESET_CALLS.with(|calls| calls.set(calls.get() + 1));
         self.region_that_arrived = None;
         self.region_that_arrived_top = None;
         self.reached_from_source = None;
@@ -127,11 +129,11 @@ impl DetectorNode {
 
     #[cfg(test)]
     pub(crate) fn reset_reset_call_count() {
-        RESET_CALLS.store(0, Ordering::Relaxed);
+        RESET_CALLS.with(|calls| calls.set(0));
     }
 
     #[cfg(test)]
     pub(crate) fn reset_call_count() -> usize {
-        RESET_CALLS.load(Ordering::Relaxed)
+        RESET_CALLS.with(|calls| calls.get())
     }
 }
