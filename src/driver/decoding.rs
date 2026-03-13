@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn shatter_and_extract_repeated_decode_still_allocates() {
+    fn shatter_and_extract_repeated_decode_reuses_cleanup_buffer() {
         let mut matching = Matching::new();
         matching.add_edge(0, 1, 1.0, &[0], 0.1);
         matching.add_edge(2, 3, 1.0, &[], 0.1);
