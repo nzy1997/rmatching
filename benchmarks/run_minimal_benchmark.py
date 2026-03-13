@@ -4,11 +4,17 @@ import argparse
 import csv
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", str(Path("/tmp") / "codex-mpl-cache"))
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.minimal_cases import build_cases
 
@@ -34,6 +40,10 @@ CSV_HEADER = [
 ]
 
 
+def normalize_fault_ids(observables):
+    return {int(value) for value in observables}
+
+
 def dem_to_pymatching(dem_text: str):
     import pymatching
 
@@ -54,14 +64,14 @@ def dem_to_pymatching(dem_text: str):
             matcher.add_edge(
                 detectors[0],
                 detectors[1],
-                fault_ids=observables,
+                fault_ids=normalize_fault_ids(observables),
                 weight=weight,
                 error_probability=probability,
             )
         elif len(detectors) == 1:
             matcher.add_boundary_edge(
                 detectors[0],
-                fault_ids=observables,
+                fault_ids=normalize_fault_ids(observables),
                 weight=weight,
                 error_probability=probability,
             )
@@ -113,8 +123,10 @@ def measure_batch_decode(decode_fn, syndromes, warmup_rounds: int, measure_round
 
 def run_pymatching(case, warmup_rounds: int, measure_rounds: int):
     import numpy as np
+    import pymatching
 
     build_started = time.perf_counter()
+    _ = pymatching
     matcher = dem_to_pymatching(case.dem)
     build_us = (time.perf_counter() - build_started) * 1e6
     syndromes = np.asarray(case.syndromes, dtype=np.uint8)

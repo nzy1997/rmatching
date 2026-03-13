@@ -1,9 +1,13 @@
 import unittest
 
-from benchmarks.run_minimal_benchmark import summarize_case
+from benchmarks.run_minimal_benchmark import normalize_fault_ids, summarize_case
 
 
 class RunMinimalBenchmarkTest(unittest.TestCase):
+    def test_normalize_fault_ids_returns_set(self):
+        self.assertEqual(normalize_fault_ids([]), set())
+        self.assertEqual(normalize_fault_ids([0, 2]), {0, 2})
+
     def test_summarize_case_reports_match_rate_and_mismatches(self):
         row, mismatches = summarize_case(
             case_name="square-4",
