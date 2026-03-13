@@ -964,8 +964,9 @@ impl Mwpm {
     }
 
     fn reschedule_region_nodes(&mut self, region: RegionIdx) {
-        let shell: Vec<NodeIdx> = self.flooder.region_arena[region.0].shell_area.clone();
-        for node_idx in shell {
+        let shell_len = self.flooder.region_arena[region.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.flooder.region_arena[region.0].shell_area[i];
             self.flooder.reschedule_events_at_detector_node(node_idx);
         }
     }
@@ -976,5 +977,26 @@ impl Mwpm {
 
     pub fn reset(&mut self) {
         self.flooder.reset();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flooder::graph::MatchingGraph;
+    use crate::test_alloc::{allocation_count, reset_allocation_count};
+
+    #[test]
+    fn reschedule_region_nodes_does_not_allocate() {
+        let mut graph = MatchingGraph::new(1, 0);
+        graph.add_boundary_edge(0, 5, &[]);
+
+        let mut mwpm = Mwpm::new(GraphFlooder::new(graph));
+        let region = mwpm.flooder.create_detection_event(NodeIdx(0));
+
+        reset_allocation_count();
+        mwpm.reschedule_region_nodes(region);
+
+        assert_eq!(allocation_count(), 0);
     }
 }
