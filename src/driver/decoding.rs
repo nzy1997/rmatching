@@ -6,19 +6,27 @@ use crate::types::*;
 /// Public-facing decoder wrapping a `UserGraph` and its cached `Mwpm`.
 pub struct Matching {
     user_graph: UserGraph,
+    detection_events_buf: Vec<usize>,
+    effective_events_buf: Vec<usize>,
 }
 
 impl Matching {
     /// Build a `Matching` from a Stim DEM text string.
     pub fn from_dem(dem_text: &str) -> Result<Self, String> {
         let user_graph = parse_dem(dem_text)?;
-        Ok(Matching { user_graph })
+        Ok(Matching {
+            user_graph,
+            detection_events_buf: Vec::new(),
+            effective_events_buf: Vec::new(),
+        })
     }
 
     /// Create an empty `Matching` (edges added manually).
     pub fn new() -> Self {
         Matching {
             user_graph: UserGraph::new(),
+            detection_events_buf: Vec::new(),
+            effective_events_buf: Vec::new(),
         }
     }
 
@@ -55,46 +63,77 @@ impl Matching {
     /// `syndrome` has one byte per detector; non-zero means that detector fired.
     /// Returns one byte per observable (0 or 1).
     pub fn decode(&mut self, syndrome: &[u8]) -> Vec<u8> {
-        let mwpm = self.user_graph.get_mwpm();
-        let num_observables = mwpm.flooder.graph.num_observables;
-        let neg_obs_mask = compute_neg_obs_mask(&mwpm.flooder.graph.negative_weight_observables_set);
+        let mut out = Vec::new();
+        self.decode_into(syndrome, &mut out);
+        out
+    }
 
-        let detection_events = syndrome_to_detection_events(syndrome);
-        let effective_events = apply_negative_weight_events(
-            &detection_events,
+    /// Decode a syndrome into a caller-provided output buffer.
+    pub fn decode_into(&mut self, syndrome: &[u8], out: &mut Vec<u8>) {
+        let user_graph = &mut self.user_graph;
+        let detection_events_buf = &mut self.detection_events_buf;
+        let effective_events_buf = &mut self.effective_events_buf;
+        let mwpm = user_graph.get_mwpm();
+        let num_observables = mwpm.flooder.graph.num_observables;
+        let neg_obs_mask =
+            compute_neg_obs_mask(&mwpm.flooder.graph.negative_weight_observables_set);
+
+        syndrome_to_detection_events_into(syndrome, detection_events_buf);
+        apply_negative_weight_events_into(
+            detection_events_buf,
             &mwpm.flooder.graph.negative_weight_detection_events_set,
             &mwpm.flooder.graph.is_user_graph_boundary_node,
+            effective_events_buf,
         );
 
-        decode_events_to_prediction(mwpm, &effective_events, num_observables, neg_obs_mask)
+        decode_events_to_prediction_into(
+            mwpm,
+            effective_events_buf,
+            num_observables,
+            neg_obs_mask,
+            out,
+        );
     }
 
     /// Decode multiple syndromes. Each result matches `decode` on the same input.
     pub fn decode_batch(&mut self, syndromes: &[Vec<u8>]) -> Vec<Vec<u8>> {
-        let mwpm = self.user_graph.get_mwpm();
-        let num_observables = mwpm.flooder.graph.num_observables;
-        let neg_obs_mask = compute_neg_obs_mask(&mwpm.flooder.graph.negative_weight_observables_set);
-        let mut detection_events = Vec::new();
-        let mut effective_events = Vec::new();
-        let mut predictions = Vec::with_capacity(syndromes.len());
+        let mut out = Vec::new();
+        self.decode_batch_into(syndromes, &mut out);
+        out
+    }
 
-        for syndrome in syndromes {
-            syndrome_to_detection_events_into(syndrome, &mut detection_events);
-            apply_negative_weight_events_into(
-                &detection_events,
-                &mwpm.flooder.graph.negative_weight_detection_events_set,
-                &mwpm.flooder.graph.is_user_graph_boundary_node,
-                &mut effective_events,
-            );
-            predictions.push(decode_events_to_prediction(
-                mwpm,
-                &effective_events,
-                num_observables,
-                neg_obs_mask,
-            ));
+    /// Decode multiple syndromes into caller-provided output buffers.
+    pub fn decode_batch_into(&mut self, syndromes: &[Vec<u8>], out: &mut Vec<Vec<u8>>) {
+        let user_graph = &mut self.user_graph;
+        let detection_events_buf = &mut self.detection_events_buf;
+        let effective_events_buf = &mut self.effective_events_buf;
+        let mwpm = user_graph.get_mwpm();
+        let num_observables = mwpm.flooder.graph.num_observables;
+        let neg_obs_mask =
+            compute_neg_obs_mask(&mwpm.flooder.graph.negative_weight_observables_set);
+
+        if out.len() < syndromes.len() {
+            out.resize_with(syndromes.len(), Vec::new);
         }
 
-        predictions
+        for (syndrome, prediction_out) in syndromes.iter().zip(out.iter_mut()) {
+            syndrome_to_detection_events_into(syndrome, detection_events_buf);
+            apply_negative_weight_events_into(
+                detection_events_buf,
+                &mwpm.flooder.graph.negative_weight_detection_events_set,
+                &mwpm.flooder.graph.is_user_graph_boundary_node,
+                effective_events_buf,
+            );
+            decode_events_to_prediction_into(
+                mwpm,
+                effective_events_buf,
+                num_observables,
+                neg_obs_mask,
+                prediction_out,
+            );
+        }
+
+        out.truncate(syndromes.len());
     }
 
     /// Decode a syndrome and return matched pairs as `(node1, node2)`.
@@ -130,19 +169,37 @@ fn syndrome_to_detection_events(syndrome: &[u8]) -> Vec<usize> {
     detection_events
 }
 
+#[cfg(test)]
 fn decode_events_to_prediction(
     mwpm: &mut Mwpm,
     effective_events: &[usize],
     num_observables: usize,
     neg_obs_mask: ObsMask,
 ) -> Vec<u8> {
+    let mut predictions = Vec::new();
+    decode_events_to_prediction_into(
+        mwpm,
+        effective_events,
+        num_observables,
+        neg_obs_mask,
+        &mut predictions,
+    );
+    predictions
+}
+
+fn decode_events_to_prediction_into(
+    mwpm: &mut Mwpm,
+    effective_events: &[usize],
+    num_observables: usize,
+    neg_obs_mask: ObsMask,
+    out: &mut Vec<u8>,
+) {
     process_timeline_until_completion(mwpm, effective_events);
 
     let mut res = shatter_and_extract(mwpm, effective_events);
     res.obs_mask ^= neg_obs_mask;
-    let predictions = obs_mask_to_predictions(res.obs_mask, num_observables);
+    obs_mask_to_predictions_into(res.obs_mask, num_observables, out);
     mwpm.reset();
-    predictions
 }
 
 fn syndrome_to_detection_events_into(syndrome: &[u8], out: &mut Vec<usize>) {
@@ -303,6 +360,47 @@ mod tests {
 
         assert_eq!(allocation_count(), 0);
     }
+
+    #[test]
+    fn decode_into_matches_public_decode_and_reuses_buffer() {
+        let mut matching = Matching::new();
+        matching.add_edge(0, 1, 1.0, &[0], 0.1);
+        matching.add_boundary_edge(0, 2.0, &[], 0.1);
+        matching.add_boundary_edge(1, 2.0, &[], 0.1);
+
+        let syndrome = vec![1u8, 1u8];
+        let expected = matching.decode(&syndrome);
+        let mut out = Vec::new();
+
+        matching.decode_into(&syndrome, &mut out);
+        assert_eq!(out, expected);
+
+        reset_allocation_count();
+        matching.decode_into(&syndrome, &mut out);
+
+        assert_eq!(allocation_count(), 0);
+    }
+
+    #[test]
+    fn decode_batch_into_matches_public_decode_batch_and_reuses_buffers() {
+        let mut matching = Matching::new();
+        matching.add_edge(0, 1, 1.0, &[0], 0.1);
+        matching.add_edge(2, 3, 1.0, &[], 0.1);
+        matching.add_edge(1, 2, 3.0, &[], 0.1);
+        matching.add_boundary_edge(0, 5.0, &[], 0.05);
+        matching.add_boundary_edge(3, 5.0, &[], 0.05);
+        let syndromes = vec![vec![1u8, 1u8, 1u8, 1u8], vec![1u8, 0u8, 0u8, 1u8]];
+        let expected = matching.decode_batch(&syndromes);
+        let mut out = Vec::new();
+
+        matching.decode_batch_into(&syndromes, &mut out);
+        assert_eq!(out, expected);
+
+        reset_allocation_count();
+        matching.decode_batch_into(&syndromes, &mut out);
+
+        assert_eq!(allocation_count(), 0);
+    }
 }
 
 fn process_timeline_until_completion(mwpm: &mut Mwpm, detection_events: &[usize]) {
@@ -426,8 +524,10 @@ fn extract_match_edges(mwpm: &mut Mwpm, detection_events: &[usize]) -> Vec<(i64,
     edges
 }
 
-fn obs_mask_to_predictions(obs_mask: ObsMask, num_observables: usize) -> Vec<u8> {
-    (0..num_observables)
-        .map(|i| if i < 64 { ((obs_mask >> i) & 1) as u8 } else { 0 })
-        .collect()
+fn obs_mask_to_predictions_into(obs_mask: ObsMask, num_observables: usize, out: &mut Vec<u8>) {
+    out.clear();
+    out.resize(num_observables, 0);
+    for (i, value) in out.iter_mut().take(64).enumerate() {
+        *value = ((obs_mask >> i) & 1) as u8;
+    }
 }

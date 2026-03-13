@@ -42,16 +42,18 @@ mod bench {
         let mut matching = Matching::from_dem(&req.dem).expect("DEM must build");
         let build_us = build_started.elapsed().as_secs_f64() * 1e6;
 
-        let predictions = matching.decode_batch(&req.syndromes);
+        let mut predictions = Vec::new();
+        matching.decode_batch_into(&req.syndromes, &mut predictions);
+        let mut scratch_predictions = Vec::new();
 
         for _ in 0..req.warmup_rounds {
-            let _ = matching.decode_batch(&req.syndromes);
+            matching.decode_batch_into(&req.syndromes, &mut scratch_predictions);
         }
 
         let mut decode_latencies_us = Vec::with_capacity(req.measure_rounds);
         for _ in 0..req.measure_rounds {
             let started = Instant::now();
-            let _ = matching.decode_batch(&req.syndromes);
+            matching.decode_batch_into(&req.syndromes, &mut scratch_predictions);
             decode_latencies_us.push(started.elapsed().as_secs_f64() * 1e6);
         }
 

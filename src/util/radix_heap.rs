@@ -111,12 +111,14 @@ impl<E: HasTime> RadixHeapQueue<E> {
             self.cur_time = widen_from_nearby_reference(min_time, self.cur_time);
 
             // Redistribute all events from this bucket into lower buckets.
-            let events: Vec<E> = self.buckets[bi].drain(..).collect();
-            for event in events {
+            let mut events = Vec::new();
+            std::mem::swap(&mut events, &mut self.buckets[bi]);
+            for event in events.drain(..) {
                 let new_bucket = self.bucket_for(event.time());
                 debug_assert!(new_bucket < bi);
                 self.buckets[new_bucket].push(event);
             }
+            self.buckets[bi] = events;
         }
 
         // Now bucket 0 must have at least one event.
@@ -156,6 +158,7 @@ impl<E: HasTime> Default for RadixHeapQueue<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_alloc::{allocation_count, reset_allocation_count};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum TestEvent {
@@ -204,5 +207,27 @@ mod tests {
             widen_from_nearby_reference(Wrapping((reference as u32).wrapping_add(1_000)), reference);
         assert!(widened > reference);
         assert_eq!(widened - reference, 1_000);
+    }
+
+    #[test]
+    fn dequeue_redistribute_reuses_bucket_storage() {
+        let mut q = RadixHeapQueue::<TestEvent>::new();
+
+        for t in [9u32, 3, 17] {
+            q.enqueue(TestEvent::At(Wrapping(t)));
+        }
+        while !q.is_empty() {
+            let _ = q.dequeue();
+        }
+
+        q.reset();
+        for t in [9u32, 3, 17] {
+            q.enqueue(TestEvent::At(Wrapping(t)));
+        }
+
+        reset_allocation_count();
+        let _ = q.dequeue();
+
+        assert_eq!(allocation_count(), 0);
     }
 }
