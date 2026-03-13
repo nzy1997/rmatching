@@ -16,16 +16,20 @@ pub struct GraphFlooder {
     pub node_arena: Arena<AltTreeNode>,
     pub queue: RadixHeapQueue<FloodCheckEvent>,
     pub match_edges: Vec<CompressedEdge>,
+    touched_nodes: Vec<NodeIdx>,
+    node_was_touched: Vec<bool>,
 }
 
 impl GraphFlooder {
     pub fn new(graph: MatchingGraph) -> Self {
         GraphFlooder {
+            node_was_touched: vec![false; graph.nodes.len()],
             graph,
             region_arena: Arena::new(),
             node_arena: Arena::new(),
             queue: RadixHeapQueue::new(),
             match_edges: Vec::new(),
+            touched_nodes: Vec::new(),
         }
     }
 
@@ -34,6 +38,7 @@ impl GraphFlooder {
     // ---------------------------------------------------------------
 
     pub fn create_detection_event(&mut self, node_idx: NodeIdx) -> RegionIdx {
+        self.mark_node_touched(node_idx);
         let region_idx = RegionIdx(self.region_arena.alloc());
         {
             let region = self.region_arena.get_mut(region_idx.0);
@@ -219,6 +224,7 @@ impl GraphFlooder {
         from_node_idx: NodeIdx,
         from_to_empty_index: usize,
     ) {
+        self.mark_node_touched(empty_node_idx);
         // Read from the source node
         let from_node = &self.graph.nodes[from_node_idx.0 as usize];
         let obs = from_node.neighbor_observables[from_to_empty_index];
@@ -526,8 +532,9 @@ impl GraphFlooder {
     // ---------------------------------------------------------------
 
     pub fn reset(&mut self) {
-        for node in &mut self.graph.nodes {
-            node.reset();
+        for node_idx in self.touched_nodes.drain(..) {
+            self.graph.nodes[node_idx.0 as usize].reset();
+            self.node_was_touched[node_idx.0 as usize] = false;
         }
         self.region_arena.clear();
         self.node_arena.clear();
@@ -545,5 +552,37 @@ impl GraphFlooder {
             .iter()
             .position(|n| *n == target)
             .expect("neighbor not found")
+    }
+
+    fn mark_node_touched(&mut self, node_idx: NodeIdx) {
+        let touched = &mut self.node_was_touched[node_idx.0 as usize];
+        if !*touched {
+            *touched = true;
+            self.touched_nodes.push(node_idx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flooder::detector_node::DetectorNode;
+
+    #[test]
+    fn reset_only_visits_touched_nodes() {
+        let mut graph = MatchingGraph::new(10, 0);
+        graph.add_edge(0, 1, 5, &[]);
+        graph.add_edge(1, 2, 5, &[]);
+        graph.add_boundary_edge(2, 5, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        flooder.create_detection_event(NodeIdx(0));
+        let event = flooder.run_until_next_mwpm_notification();
+        assert!(matches!(event, MwpmEvent::RegionHitBoundary { .. }));
+
+        DetectorNode::reset_reset_call_count();
+        flooder.reset();
+
+        assert_eq!(DetectorNode::reset_call_count(), 3);
     }
 }
