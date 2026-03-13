@@ -283,6 +283,8 @@ impl GraphFlooder {
         node: &super::detector_node::DetectorNode,
         rad1: &VaryingCT,
     ) -> (usize, CumulativeTime) {
+        let regions = self.region_arena.items();
+        let rad1_y = rad1.y_intercept();
         let mut best_time = i64::MAX;
         let mut best_neighbor = NO_NEIGHBOR;
 
@@ -291,7 +293,7 @@ impl GraphFlooder {
             let weight = node.neighbor_weights[i] as CumulativeTime;
 
             if neighbor_idx == BOUNDARY_NODE {
-                let collision_time = weight - rad1.y_intercept();
+                let collision_time = weight - rad1_y;
                 if collision_time < best_time {
                     best_time = collision_time;
                     best_neighbor = i;
@@ -304,12 +306,21 @@ impl GraphFlooder {
                 continue;
             }
 
-            let rad2 = neighbor.local_radius(self.region_arena.items());
+            if neighbor.region_that_arrived_top.is_none() {
+                let collision_time = weight - rad1_y;
+                if collision_time < best_time {
+                    best_time = collision_time;
+                    best_neighbor = i;
+                }
+                continue;
+            }
+
+            let rad2 = neighbor.local_radius(regions);
             if rad2.is_shrinking() {
                 continue;
             }
 
-            let mut collision_time = weight - rad1.y_intercept() - rad2.y_intercept();
+            let mut collision_time = weight - rad1_y - rad2.y_intercept();
             if rad2.is_growing() {
                 collision_time >>= 1; // Both growing: combined slope = 2
             }
@@ -327,8 +338,10 @@ impl GraphFlooder {
     fn find_next_event_not_growing(
         &self,
         node: &super::detector_node::DetectorNode,
-        _rad1: &VaryingCT,
+        rad1: &VaryingCT,
     ) -> (usize, CumulativeTime) {
+        let regions = self.region_arena.items();
+        let rad1_y = rad1.y_intercept();
         let mut best_time = i64::MAX;
         let mut best_neighbor = NO_NEIGHBOR;
 
@@ -346,10 +359,13 @@ impl GraphFlooder {
             }
             let weight = node.neighbor_weights[i] as CumulativeTime;
             let neighbor = &self.graph.nodes[neighbor_idx.0 as usize];
-            let rad2 = neighbor.local_radius(self.region_arena.items());
+            if neighbor.region_that_arrived_top.is_none() {
+                continue;
+            }
+            let rad2 = neighbor.local_radius(regions);
 
             if rad2.is_growing() {
-                let collision_time = weight - _rad1.y_intercept() - rad2.y_intercept();
+                let collision_time = weight - rad1_y - rad2.y_intercept();
                 if collision_time < best_time {
                     best_time = collision_time;
                     best_neighbor = i;
@@ -655,5 +671,19 @@ mod tests {
 
         assert!(!flooder.graph.nodes[0].node_event_tracker.has_desired_time);
         assert!(!flooder.graph.nodes[1].node_event_tracker.has_desired_time);
+    }
+
+    #[test]
+    fn find_next_event_growing_skips_local_radius_for_unoccupied_neighbor() {
+        let mut graph = MatchingGraph::new(2, 0);
+        graph.add_edge(0, 1, 5, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        flooder.create_detection_event(NodeIdx(0));
+
+        DetectorNode::reset_local_radius_call_count();
+        let (_best_neighbor, _best_time) = flooder.find_next_event_at_node(NodeIdx(0));
+
+        assert_eq!(DetectorNode::local_radius_call_count(), 1);
     }
 }
