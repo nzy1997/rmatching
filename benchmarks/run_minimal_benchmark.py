@@ -89,8 +89,14 @@ def normalize_predictions(array_like):
     return [[int(value) for value in row] for row in arr.tolist()]
 
 
-def measure_batch_decode(decode_fn, syndromes, warmup_rounds: int, measure_rounds: int):
-    predictions = decode_fn(syndromes)
+def measure_batch_decode(
+    decode_fn,
+    normalize_fn,
+    syndromes,
+    warmup_rounds: int,
+    measure_rounds: int,
+):
+    predictions = normalize_fn(decode_fn(syndromes))
 
     for _ in range(warmup_rounds):
         decode_fn(syndromes)
@@ -132,9 +138,15 @@ def run_pymatching(case, warmup_rounds: int, measure_rounds: int):
     syndromes = np.asarray(case.syndromes, dtype=np.uint8)
 
     def decode_batch(batch):
-        return normalize_predictions(matcher.decode_batch(batch))
+        return matcher.decode_batch(batch)
 
-    stats = measure_batch_decode(decode_batch, syndromes, warmup_rounds, measure_rounds)
+    stats = measure_batch_decode(
+        decode_fn=decode_batch,
+        normalize_fn=normalize_predictions,
+        syndromes=syndromes,
+        warmup_rounds=warmup_rounds,
+        measure_rounds=measure_rounds,
+    )
     stats["build_us"] = build_us
     return stats
 
