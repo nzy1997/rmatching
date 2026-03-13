@@ -52,7 +52,11 @@ impl Mwpm {
 
     pub fn create_detection_event(&mut self, node_idx: NodeIdx) {
         let region_idx = self.flooder.create_detection_event(node_idx);
-        let alt_idx = AltTreeIdx(self.flooder.node_arena.alloc());
+        let alt_idx = AltTreeIdx(
+            self.flooder
+                .node_arena
+                .alloc_with_reset(AltTreeNode::reset_for_reuse),
+        );
         self.flooder.node_arena[alt_idx.0] = AltTreeNode::new_root(region_idx);
         self.flooder.region_arena[region_idx.0].alt_tree_node = Some(alt_idx);
         self.flooder.set_region_growing(region_idx);
@@ -551,7 +555,11 @@ impl Mwpm {
         child_inner_to_outer_edge: CompressedEdge,
         child_compressed_edge: CompressedEdge,
     ) -> AltTreeIdx {
-        let child_idx = AltTreeIdx(self.flooder.node_arena.alloc());
+        let child_idx = AltTreeIdx(
+            self.flooder
+                .node_arena
+                .alloc_with_reset(AltTreeNode::reset_for_reuse),
+        );
         self.flooder.node_arena[child_idx.0] =
             AltTreeNode::new_pair(child_inner, child_outer, child_inner_to_outer_edge);
         self.flooder.region_arena[child_inner.0].alt_tree_node = Some(child_idx);
@@ -639,7 +647,11 @@ impl Mwpm {
     // -------------------------------------------------------------------
 
     fn create_blossom(&mut self, cycle: &[RegionEdge]) -> RegionIdx {
-        let blossom_idx = RegionIdx(self.flooder.region_arena.alloc());
+        let blossom_idx = RegionIdx(
+            self.flooder
+                .region_arena
+                .alloc_with_reset(crate::flooder::fill_region::GraphFillRegion::reset_for_reuse),
+        );
         self.flooder.region_arena[blossom_idx.0].blossom_parent_top = Some(blossom_idx);
 
         // Set blossom children

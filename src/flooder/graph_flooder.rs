@@ -39,7 +39,8 @@ impl GraphFlooder {
 
     pub fn create_detection_event(&mut self, node_idx: NodeIdx) -> RegionIdx {
         self.mark_node_touched(node_idx);
-        let region_idx = RegionIdx(self.region_arena.alloc());
+        let region_idx =
+            RegionIdx(self.region_arena.alloc_with_reset(GraphFillRegion::reset_for_reuse));
         {
             let region = self.region_arena.get_mut(region_idx.0);
             region.radius =
@@ -599,8 +600,10 @@ impl GraphFlooder {
             self.graph.nodes[node_idx.0 as usize].reset();
             self.node_was_touched[node_idx.0 as usize] = false;
         }
-        self.region_arena.clear();
-        self.node_arena.clear();
+        self.region_arena
+            .recycle_touched(GraphFillRegion::reset_for_reuse);
+        self.node_arena
+            .recycle_touched(AltTreeNode::reset_for_reuse);
         self.queue.reset();
         self.match_edges.clear();
     }
@@ -631,6 +634,7 @@ mod tests {
     use super::*;
     use crate::flooder::detector_node::DetectorNode;
     use crate::interop::{CompressedEdge, RegionEdge};
+    use crate::test_alloc::{allocation_count, reset_allocation_count};
 
     #[test]
     fn reset_only_visits_touched_nodes() {
@@ -648,6 +652,21 @@ mod tests {
         flooder.reset();
 
         assert_eq!(DetectorNode::reset_call_count(), 3);
+    }
+
+    #[test]
+    fn create_detection_event_after_reset_reuses_region_storage() {
+        let mut graph = MatchingGraph::new(1, 0);
+        graph.add_boundary_edge(0, 5, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        flooder.create_detection_event(NodeIdx(0));
+        flooder.reset();
+
+        reset_allocation_count();
+        flooder.create_detection_event(NodeIdx(0));
+
+        assert_eq!(allocation_count(), 0);
     }
 
     #[test]

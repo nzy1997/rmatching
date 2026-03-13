@@ -73,6 +73,15 @@ impl Default for AltTreeNode {
 }
 
 impl AltTreeNode {
+    pub fn reset_for_reuse(&mut self) {
+        self.inner_region = None;
+        self.outer_region = None;
+        self.inner_to_outer_edge = CompressedEdge::empty();
+        self.parent = None;
+        self.children.clear();
+        self.visited = false;
+    }
+
     /// Root-only constructor: outer region only, no inner.
     pub fn new_root(outer_region: RegionIdx) -> Self {
         AltTreeNode {
