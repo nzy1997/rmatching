@@ -44,6 +44,7 @@ impl GraphFlooder {
             let region = self.region_arena.get_mut(region_idx.0);
             region.radius =
                 VaryingCT::growing_varying_with_zero_distance_at_time(self.queue.cur_time);
+            region.blossom_parent_top = Some(region_idx);
             region.shell_area.push(node_idx);
         }
 
@@ -230,32 +231,33 @@ impl GraphFlooder {
         let obs = from_node.neighbor_observables[from_to_empty_index];
         let obs_crossed = from_node.observables_crossed_from_source ^ obs;
         let source = from_node.reached_from_source;
-        let region = from_node.region_that_arrived;
-        let region_top = from_node.region_that_arrived_top;
+        let region_top = from_node
+            .region_that_arrived_top
+            .expect("growing into an empty node requires a top region");
+        let arriving_top = self.region_arena[region_top.0]
+            .blossom_parent_top
+            .unwrap_or(region_top);
 
         // Compute radius_of_arrival from the top region's current radius
-        let radius_of_arrival = if let Some(top) = region_top {
-            self.region_arena[top.0]
-                .radius
-                .get_distance_at_time(self.queue.cur_time)
-        } else {
-            0
-        };
+        let radius_of_arrival = self.region_arena[region_top.0]
+            .radius
+            .get_distance_at_time(self.queue.cur_time);
 
         // Write to the empty node
         let empty_node = &mut self.graph.nodes[empty_node_idx.0 as usize];
         empty_node.observables_crossed_from_source = obs_crossed;
         empty_node.reached_from_source = source;
         empty_node.radius_of_arrival = radius_of_arrival;
-        empty_node.region_that_arrived = region;
-        empty_node.region_that_arrived_top = region_top;
+        empty_node.region_that_arrived = Some(region_top);
+        empty_node.region_that_arrived_top = Some(arriving_top);
         empty_node.wrapped_radius_cached =
             empty_node.compute_wrapped_radius(self.region_arena.items());
 
         // Add to region's shell area
-        if let Some(r) = region_top {
-            self.region_arena.get_mut(r.0).shell_area.push(empty_node_idx);
-        }
+        self.region_arena
+            .get_mut(region_top.0)
+            .shell_area
+            .push(empty_node_idx);
 
         self.reschedule_events_at_detector_node(empty_node_idx);
     }
@@ -381,37 +383,54 @@ impl GraphFlooder {
     // Region state transitions
     // ---------------------------------------------------------------
 
+    fn total_area_nodes(&self, region_idx: RegionIdx) -> Vec<NodeIdx> {
+        let mut nodes = Vec::new();
+        self.collect_total_area_recursive(region_idx, &mut nodes);
+        nodes
+    }
+
+    fn collect_total_area_recursive(&self, region_idx: RegionIdx, out: &mut Vec<NodeIdx>) {
+        out.extend(self.region_arena[region_idx.0].shell_area.iter().copied());
+        for child in &self.region_arena[region_idx.0].blossom_children {
+            self.collect_total_area_recursive(child.region, out);
+        }
+    }
+
     pub fn set_region_growing(&mut self, region_idx: RegionIdx) {
-        let region = self.region_arena.get_mut(region_idx.0);
-        region.radius = region.radius.then_growing_at_time(self.queue.cur_time);
-        region.shrink_event_tracker.set_no_desired_event();
-        let shell: Vec<NodeIdx> = region.shell_area.clone();
-        for node_idx in shell {
+        {
+            let region = self.region_arena.get_mut(region_idx.0);
+            region.radius = region.radius.then_growing_at_time(self.queue.cur_time);
+            region.shrink_event_tracker.set_no_desired_event();
+        }
+        for node_idx in self.total_area_nodes(region_idx) {
             self.reschedule_events_at_detector_node(node_idx);
         }
     }
 
     pub fn set_region_frozen(&mut self, region_idx: RegionIdx) {
-        let region = self.region_arena.get_mut(region_idx.0);
-        let was_shrinking = region.radius.is_shrinking();
-        region.radius = region.radius.then_frozen_at_time(self.queue.cur_time);
-        region.shrink_event_tracker.set_no_desired_event();
+        let was_shrinking = {
+            let region = self.region_arena.get_mut(region_idx.0);
+            let was_shrinking = region.radius.is_shrinking();
+            region.radius = region.radius.then_frozen_at_time(self.queue.cur_time);
+            region.shrink_event_tracker.set_no_desired_event();
+            was_shrinking
+        };
         if was_shrinking {
-            let shell: Vec<NodeIdx> = region.shell_area.clone();
-            for node_idx in shell {
+            for node_idx in self.total_area_nodes(region_idx) {
                 self.reschedule_events_at_detector_node(node_idx);
             }
         }
     }
 
     pub fn set_region_shrinking(&mut self, region_idx: RegionIdx) {
-        let region = self.region_arena.get_mut(region_idx.0);
-        region.radius = region.radius.then_shrinking_at_time(self.queue.cur_time);
+        {
+            let region = self.region_arena.get_mut(region_idx.0);
+            region.radius = region.radius.then_shrinking_at_time(self.queue.cur_time);
+        }
         // Schedule tentative shrink event
         self.schedule_tentative_shrink_event(region_idx);
         // No node events while shrinking
-        let shell: Vec<NodeIdx> = self.region_arena[region_idx.0].shell_area.clone();
-        for node_idx in shell {
+        for node_idx in self.total_area_nodes(region_idx) {
             self.graph.nodes[node_idx.0 as usize]
                 .node_event_tracker
                 .set_no_desired_event();

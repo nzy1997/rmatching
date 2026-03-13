@@ -8,11 +8,11 @@ import sys
 import time
 from pathlib import Path
 
+os.environ.setdefault("MPLCONFIGDIR", str(Path("/tmp") / "codex-mpl-cache"))
+
 import numpy as np
 import pymatching
 import stim
-
-os.environ.setdefault("MPLCONFIGDIR", str(Path("/tmp") / "codex-mpl-cache"))
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

@@ -59,3 +59,38 @@ detector D2
     assert_eq!(g.get_num_nodes(), 3); // D0, D1, D2
     assert_eq!(g.num_observables, 2); // L0 and L1
 }
+
+#[test]
+fn parse_correlated_segments_from_single_error_instruction() {
+    let dem = "error(0.1) D0 D1 L0 ^ D2 L1 ^ D3 D4";
+    let g = parse_dem(dem).unwrap();
+
+    assert_eq!(g.edges.len(), 3);
+
+    assert_eq!(g.edges[0].node1, 0);
+    assert_eq!(g.edges[0].node2, 1);
+    assert_eq!(g.edges[0].observable_indices, vec![0]);
+
+    assert_eq!(g.edges[1].node1, 2);
+    assert_eq!(g.edges[1].node2, usize::MAX);
+    assert_eq!(g.edges[1].observable_indices, vec![1]);
+
+    assert_eq!(g.edges[2].node1, 3);
+    assert_eq!(g.edges[2].node2, 4);
+    assert!(g.get_num_nodes() >= 5);
+}
+
+#[test]
+fn parse_repeat_with_coordinate_shift_and_detector_shift() {
+    let dem = "\
+repeat 2 {
+    error(0.1) D0 D1
+    shift_detectors(0, 0, 1) 0
+    shift_detectors 2
+}";
+    let g = parse_dem(dem).unwrap();
+
+    assert_eq!(g.edges.len(), 2);
+    assert_eq!((g.edges[0].node1, g.edges[0].node2), (0, 1));
+    assert_eq!((g.edges[1].node1, g.edges[1].node2), (2, 3));
+}

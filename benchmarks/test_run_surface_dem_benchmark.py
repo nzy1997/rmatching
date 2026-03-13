@@ -10,12 +10,12 @@ from benchmarks.surface_dem_cases import build_cases
 
 
 class RunSurfaceDemBenchmarkTest(unittest.TestCase):
-    def test_rmatching_decodes_d17_surface_case(self):
-        case = build_cases(shots=8, seed=12345)[1]
+    def test_rmatching_decodes_known_d17_regression_syndrome(self):
+        case = build_cases(shots=64, seed=12345)[1]
         single_shot_case = type(
             "SingleShotCase",
             (),
-            {"dem": case.dem, "syndromes": [case.syndromes[0]]},
+            {"dem": case.dem, "syndromes": [case.syndromes[6]]},
         )
         py_stats = run_pymatching(single_shot_case, warmup_rounds=0, measure_rounds=1)
         stats = run_rmatching(single_shot_case, warmup_rounds=0, measure_rounds=1)
