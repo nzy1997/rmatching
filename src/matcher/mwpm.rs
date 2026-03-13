@@ -642,6 +642,11 @@ impl Mwpm {
         &mut self,
         region: RegionIdx,
     ) -> MatchingResult {
+        let boundary_edge = self.flooder.region_arena[region.0]
+            .match_
+            .as_ref()
+            .map(|m| m.edge)
+            .unwrap_or_else(CompressedEdge::empty);
         let has_match_region = self.flooder.region_arena[region.0]
             .match_
             .as_ref()
@@ -679,16 +684,12 @@ impl Mwpm {
                 };
             }
         } else if !has_blossom_children {
-            // Boundary match, no blossom children
-            let edge = self.flooder.region_arena[region.0]
-                .match_
-                .as_ref()
-                .unwrap()
-                .edge;
+            // PyMatching keeps a default-initialized match object even when the
+            // region is only carrying an implicit boundary/empty match state.
             let w = self.flooder.region_arena[region.0].radius.y_intercept();
             self.flooder.region_arena.free(region.0);
             return MatchingResult {
-                obs_mask: edge.obs_mask,
+                obs_mask: boundary_edge.obs_mask,
                 weight: w,
             };
         }
@@ -792,6 +793,11 @@ impl Mwpm {
         region: RegionIdx,
         match_edges: &mut Vec<CompressedEdge>,
     ) {
+        let boundary_edge = self.flooder.region_arena[region.0]
+            .match_
+            .as_ref()
+            .map(|m| m.edge)
+            .unwrap_or_else(CompressedEdge::empty);
         let has_match_region = self.flooder.region_arena[region.0]
             .match_
             .as_ref()
@@ -822,12 +828,9 @@ impl Mwpm {
                 return;
             }
         } else if !has_blossom_children {
-            let edge = self.flooder.region_arena[region.0]
-                .match_
-                .as_ref()
-                .unwrap()
-                .edge;
-            match_edges.push(edge);
+            if boundary_edge.loc_from.is_some() || boundary_edge.loc_to.is_some() || boundary_edge.obs_mask != 0 {
+                match_edges.push(boundary_edge);
+            }
             self.flooder.region_arena.free(region.0);
             return;
         }
