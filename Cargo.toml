@@ -16,8 +16,4 @@ rand = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
-[patch."https://github.com/nzy1997/rstim.git"]
-rstim = { path = "../rstim" }
-rsinter = { path = "../rsinter" }
-
 [dev-dependencies]
