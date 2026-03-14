@@ -10,3 +10,6 @@ pub use driver::decoding::Matching;
 
 #[cfg(feature = "rsinter")]
 pub mod decoder;
+
+#[cfg(test)]
+pub mod test_alloc;

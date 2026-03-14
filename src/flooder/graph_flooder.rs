@@ -16,16 +16,22 @@ pub struct GraphFlooder {
     pub node_arena: Arena<AltTreeNode>,
     pub queue: RadixHeapQueue<FloodCheckEvent>,
     pub match_edges: Vec<CompressedEdge>,
+    pub node_cleanup_buffer: Vec<NodeIdx>,
+    touched_nodes: Vec<NodeIdx>,
+    node_was_touched: Vec<bool>,
 }
 
 impl GraphFlooder {
     pub fn new(graph: MatchingGraph) -> Self {
         GraphFlooder {
+            node_was_touched: vec![false; graph.nodes.len()],
             graph,
             region_arena: Arena::new(),
             node_arena: Arena::new(),
             queue: RadixHeapQueue::new(),
             match_edges: Vec::new(),
+            node_cleanup_buffer: Vec::new(),
+            touched_nodes: Vec::new(),
         }
     }
 
@@ -34,11 +40,14 @@ impl GraphFlooder {
     // ---------------------------------------------------------------
 
     pub fn create_detection_event(&mut self, node_idx: NodeIdx) -> RegionIdx {
-        let region_idx = RegionIdx(self.region_arena.alloc());
+        self.mark_node_touched(node_idx);
+        let region_idx =
+            RegionIdx(self.region_arena.alloc_with_reset(GraphFillRegion::reset_for_reuse));
         {
             let region = self.region_arena.get_mut(region_idx.0);
             region.radius =
                 VaryingCT::growing_varying_with_zero_distance_at_time(self.queue.cur_time);
+            region.blossom_parent_top = Some(region_idx);
             region.shell_area.push(node_idx);
         }
 
@@ -219,37 +228,39 @@ impl GraphFlooder {
         from_node_idx: NodeIdx,
         from_to_empty_index: usize,
     ) {
+        self.mark_node_touched(empty_node_idx);
         // Read from the source node
         let from_node = &self.graph.nodes[from_node_idx.0 as usize];
         let obs = from_node.neighbor_observables[from_to_empty_index];
         let obs_crossed = from_node.observables_crossed_from_source ^ obs;
         let source = from_node.reached_from_source;
-        let region = from_node.region_that_arrived;
-        let region_top = from_node.region_that_arrived_top;
+        let region_top = from_node
+            .region_that_arrived_top
+            .expect("growing into an empty node requires a top region");
+        let arriving_top = self.region_arena[region_top.0]
+            .blossom_parent_top
+            .unwrap_or(region_top);
 
         // Compute radius_of_arrival from the top region's current radius
-        let radius_of_arrival = if let Some(top) = region_top {
-            self.region_arena[top.0]
-                .radius
-                .get_distance_at_time(self.queue.cur_time)
-        } else {
-            0
-        };
+        let radius_of_arrival = self.region_arena[region_top.0]
+            .radius
+            .get_distance_at_time(self.queue.cur_time);
 
         // Write to the empty node
         let empty_node = &mut self.graph.nodes[empty_node_idx.0 as usize];
         empty_node.observables_crossed_from_source = obs_crossed;
         empty_node.reached_from_source = source;
         empty_node.radius_of_arrival = radius_of_arrival;
-        empty_node.region_that_arrived = region;
-        empty_node.region_that_arrived_top = region_top;
+        empty_node.region_that_arrived = Some(region_top);
+        empty_node.region_that_arrived_top = Some(arriving_top);
         empty_node.wrapped_radius_cached =
             empty_node.compute_wrapped_radius(self.region_arena.items());
 
         // Add to region's shell area
-        if let Some(r) = region_top {
-            self.region_arena.get_mut(r.0).shell_area.push(empty_node_idx);
-        }
+        self.region_arena
+            .get_mut(region_top.0)
+            .shell_area
+            .push(empty_node_idx);
 
         self.reschedule_events_at_detector_node(empty_node_idx);
     }
@@ -258,14 +269,33 @@ impl GraphFlooder {
     // Find next event at a node
     // ---------------------------------------------------------------
 
-    fn find_next_event_at_node(&self, node_idx: NodeIdx) -> (usize, CumulativeTime) {
-        let node = &self.graph.nodes[node_idx.0 as usize];
-        let rad1 = node.local_radius(self.region_arena.items());
+    #[inline]
+    fn node_local_radius_parts(
+        node: &super::detector_node::DetectorNode,
+        regions: &[GraphFillRegion],
+    ) -> (CumulativeTime, bool, bool) {
+        match node.region_that_arrived_top {
+            None => (0, false, false),
+            Some(top_idx) => {
+                let top_radius = regions[top_idx.0 as usize].radius;
+                (
+                    top_radius.y_intercept() + node.wrapped_radius_cached as i64,
+                    top_radius.is_growing(),
+                    top_radius.is_shrinking(),
+                )
+            }
+        }
+    }
 
-        if rad1.is_growing() {
-            self.find_next_event_growing(node, &rad1)
+    fn find_next_event_at_node(&self, node_idx: NodeIdx) -> (usize, CumulativeTime) {
+        let regions = self.region_arena.items();
+        let node = &self.graph.nodes[node_idx.0 as usize];
+        let (rad1_y, rad1_growing, _rad1_shrinking) = Self::node_local_radius_parts(node, regions);
+
+        if rad1_growing {
+            self.find_next_event_growing(node, regions, rad1_y)
         } else {
-            self.find_next_event_not_growing(node, &rad1)
+            self.find_next_event_not_growing(node, regions, rad1_y)
         }
     }
 
@@ -273,7 +303,8 @@ impl GraphFlooder {
     fn find_next_event_growing(
         &self,
         node: &super::detector_node::DetectorNode,
-        rad1: &VaryingCT,
+        regions: &[GraphFillRegion],
+        rad1_y: CumulativeTime,
     ) -> (usize, CumulativeTime) {
         let mut best_time = i64::MAX;
         let mut best_neighbor = NO_NEIGHBOR;
@@ -283,7 +314,7 @@ impl GraphFlooder {
             let weight = node.neighbor_weights[i] as CumulativeTime;
 
             if neighbor_idx == BOUNDARY_NODE {
-                let collision_time = weight - rad1.y_intercept();
+                let collision_time = weight - rad1_y;
                 if collision_time < best_time {
                     best_time = collision_time;
                     best_neighbor = i;
@@ -296,13 +327,23 @@ impl GraphFlooder {
                 continue;
             }
 
-            let rad2 = neighbor.local_radius(self.region_arena.items());
-            if rad2.is_shrinking() {
+            if neighbor.region_that_arrived_top.is_none() {
+                let collision_time = weight - rad1_y;
+                if collision_time < best_time {
+                    best_time = collision_time;
+                    best_neighbor = i;
+                }
                 continue;
             }
 
-            let mut collision_time = weight - rad1.y_intercept() - rad2.y_intercept();
-            if rad2.is_growing() {
+            let (rad2_y, rad2_growing, rad2_shrinking) =
+                Self::node_local_radius_parts(neighbor, regions);
+            if rad2_shrinking {
+                continue;
+            }
+
+            let mut collision_time = weight - rad1_y - rad2_y;
+            if rad2_growing {
                 collision_time >>= 1; // Both growing: combined slope = 2
             }
             if collision_time < best_time {
@@ -319,7 +360,8 @@ impl GraphFlooder {
     fn find_next_event_not_growing(
         &self,
         node: &super::detector_node::DetectorNode,
-        _rad1: &VaryingCT,
+        regions: &[GraphFillRegion],
+        rad1_y: CumulativeTime,
     ) -> (usize, CumulativeTime) {
         let mut best_time = i64::MAX;
         let mut best_neighbor = NO_NEIGHBOR;
@@ -338,10 +380,14 @@ impl GraphFlooder {
             }
             let weight = node.neighbor_weights[i] as CumulativeTime;
             let neighbor = &self.graph.nodes[neighbor_idx.0 as usize];
-            let rad2 = neighbor.local_radius(self.region_arena.items());
+            if neighbor.region_that_arrived_top.is_none() {
+                continue;
+            }
+            let (rad2_y, rad2_growing, _rad2_shrinking) =
+                Self::node_local_radius_parts(neighbor, regions);
 
-            if rad2.is_growing() {
-                let collision_time = weight - _rad1.y_intercept() - rad2.y_intercept();
+            if rad2_growing {
+                let collision_time = weight - rad1_y - rad2_y;
                 if collision_time < best_time {
                     best_time = collision_time;
                     best_neighbor = i;
@@ -375,41 +421,67 @@ impl GraphFlooder {
     // Region state transitions
     // ---------------------------------------------------------------
 
-    pub fn set_region_growing(&mut self, region_idx: RegionIdx) {
-        let region = self.region_arena.get_mut(region_idx.0);
-        region.radius = region.radius.then_growing_at_time(self.queue.cur_time);
-        region.shrink_event_tracker.set_no_desired_event();
-        let shell: Vec<NodeIdx> = region.shell_area.clone();
-        for node_idx in shell {
+    fn reschedule_total_area_nodes(&mut self, region_idx: RegionIdx) {
+        let shell_len = self.region_arena[region_idx.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.region_arena[region_idx.0].shell_area[i];
             self.reschedule_events_at_detector_node(node_idx);
         }
-    }
 
-    pub fn set_region_frozen(&mut self, region_idx: RegionIdx) {
-        let region = self.region_arena.get_mut(region_idx.0);
-        let was_shrinking = region.radius.is_shrinking();
-        region.radius = region.radius.then_frozen_at_time(self.queue.cur_time);
-        region.shrink_event_tracker.set_no_desired_event();
-        if was_shrinking {
-            let shell: Vec<NodeIdx> = region.shell_area.clone();
-            for node_idx in shell {
-                self.reschedule_events_at_detector_node(node_idx);
-            }
+        let child_len = self.region_arena[region_idx.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.region_arena[region_idx.0].blossom_children[i].region;
+            self.reschedule_total_area_nodes(child_region);
         }
     }
 
-    pub fn set_region_shrinking(&mut self, region_idx: RegionIdx) {
-        let region = self.region_arena.get_mut(region_idx.0);
-        region.radius = region.radius.then_shrinking_at_time(self.queue.cur_time);
-        // Schedule tentative shrink event
-        self.schedule_tentative_shrink_event(region_idx);
-        // No node events while shrinking
-        let shell: Vec<NodeIdx> = self.region_arena[region_idx.0].shell_area.clone();
-        for node_idx in shell {
+    fn clear_total_area_node_events(&mut self, region_idx: RegionIdx) {
+        let shell_len = self.region_arena[region_idx.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.region_arena[region_idx.0].shell_area[i];
             self.graph.nodes[node_idx.0 as usize]
                 .node_event_tracker
                 .set_no_desired_event();
         }
+
+        let child_len = self.region_arena[region_idx.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.region_arena[region_idx.0].blossom_children[i].region;
+            self.clear_total_area_node_events(child_region);
+        }
+    }
+
+    pub fn set_region_growing(&mut self, region_idx: RegionIdx) {
+        {
+            let region = self.region_arena.get_mut(region_idx.0);
+            region.radius = region.radius.then_growing_at_time(self.queue.cur_time);
+            region.shrink_event_tracker.set_no_desired_event();
+        }
+        self.reschedule_total_area_nodes(region_idx);
+    }
+
+    pub fn set_region_frozen(&mut self, region_idx: RegionIdx) {
+        let was_shrinking = {
+            let region = self.region_arena.get_mut(region_idx.0);
+            let was_shrinking = region.radius.is_shrinking();
+            region.radius = region.radius.then_frozen_at_time(self.queue.cur_time);
+            region.shrink_event_tracker.set_no_desired_event();
+            was_shrinking
+        };
+        if was_shrinking {
+            self.reschedule_total_area_nodes(region_idx);
+        }
+    }
+
+    pub fn set_region_shrinking(&mut self, region_idx: RegionIdx) {
+        {
+            let region = self.region_arena.get_mut(region_idx.0);
+            region.radius = region.radius.then_shrinking_at_time(self.queue.cur_time);
+        }
+        // Schedule tentative shrink event
+        self.schedule_tentative_shrink_event(region_idx);
+        // No node events while shrinking
+        self.clear_total_area_node_events(region_idx);
     }
 
     fn schedule_tentative_shrink_event(&mut self, region_idx: RegionIdx) {
@@ -526,13 +598,17 @@ impl GraphFlooder {
     // ---------------------------------------------------------------
 
     pub fn reset(&mut self) {
-        for node in &mut self.graph.nodes {
-            node.reset();
+        for node_idx in self.touched_nodes.drain(..) {
+            self.graph.nodes[node_idx.0 as usize].reset();
+            self.node_was_touched[node_idx.0 as usize] = false;
         }
-        self.region_arena.clear();
-        self.node_arena.clear();
+        self.region_arena
+            .recycle_touched(GraphFillRegion::reset_for_reuse);
+        self.node_arena
+            .recycle_touched(AltTreeNode::reset_for_reuse);
         self.queue.reset();
         self.match_edges.clear();
+        self.node_cleanup_buffer.clear();
     }
 
     // ---------------------------------------------------------------
@@ -546,4 +622,141 @@ impl GraphFlooder {
             .position(|n| *n == target)
             .expect("neighbor not found")
     }
+
+    fn mark_node_touched(&mut self, node_idx: NodeIdx) {
+        let touched = &mut self.node_was_touched[node_idx.0 as usize];
+        if !*touched {
+            *touched = true;
+            self.touched_nodes.push(node_idx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flooder::detector_node::DetectorNode;
+    use crate::interop::{CompressedEdge, RegionEdge};
+    use crate::test_alloc::{allocation_count, reset_allocation_count};
+
+    #[test]
+    fn reset_only_visits_touched_nodes() {
+        let mut graph = MatchingGraph::new(10, 0);
+        graph.add_edge(0, 1, 5, &[]);
+        graph.add_edge(1, 2, 5, &[]);
+        graph.add_boundary_edge(2, 5, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        flooder.create_detection_event(NodeIdx(0));
+        let event = flooder.run_until_next_mwpm_notification();
+        assert!(matches!(event, MwpmEvent::RegionHitBoundary { .. }));
+
+        DetectorNode::reset_reset_call_count();
+        flooder.reset();
+
+        assert_eq!(DetectorNode::reset_call_count(), 3);
+    }
+
+    #[test]
+    fn create_detection_event_after_reset_reuses_region_storage() {
+        let mut graph = MatchingGraph::new(1, 0);
+        graph.add_boundary_edge(0, 5, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        flooder.create_detection_event(NodeIdx(0));
+        flooder.reset();
+
+        reset_allocation_count();
+        flooder.create_detection_event(NodeIdx(0));
+
+        assert_eq!(allocation_count(), 0);
+    }
+
+    #[test]
+    fn set_region_shrinking_clears_descendant_node_events_for_blossom() {
+        let mut graph = MatchingGraph::new(2, 0);
+        graph.add_edge(0, 1, 5, &[]);
+        graph.add_boundary_edge(0, 9, &[]);
+        graph.add_boundary_edge(1, 9, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        let left = flooder.create_detection_event(NodeIdx(0));
+        let right = flooder.create_detection_event(NodeIdx(1));
+
+        assert!(flooder.graph.nodes[0].node_event_tracker.has_desired_time);
+        assert!(flooder.graph.nodes[1].node_event_tracker.has_desired_time);
+
+        let blossom = RegionIdx(flooder.region_arena.alloc());
+        flooder.region_arena[blossom.0].radius =
+            VaryingCT::growing_varying_with_zero_distance_at_time(flooder.queue.cur_time);
+        flooder.region_arena[blossom.0].blossom_parent_top = Some(blossom);
+        flooder.region_arena[blossom.0].blossom_children = vec![
+            RegionEdge {
+                region: left,
+                edge: CompressedEdge::empty(),
+            },
+            RegionEdge {
+                region: right,
+                edge: CompressedEdge::empty(),
+            },
+        ];
+
+        flooder.region_arena[left.0].blossom_parent = Some(blossom);
+        flooder.region_arena[left.0].blossom_parent_top = Some(blossom);
+        flooder.region_arena[right.0].blossom_parent = Some(blossom);
+        flooder.region_arena[right.0].blossom_parent_top = Some(blossom);
+        flooder.graph.nodes[0].region_that_arrived_top = Some(blossom);
+        flooder.graph.nodes[1].region_that_arrived_top = Some(blossom);
+
+        flooder.set_region_shrinking(blossom);
+
+        assert!(!flooder.graph.nodes[0].node_event_tracker.has_desired_time);
+        assert!(!flooder.graph.nodes[1].node_event_tracker.has_desired_time);
+    }
+
+    #[test]
+    fn find_next_event_growing_skips_local_radius_for_unoccupied_neighbor() {
+        let mut graph = MatchingGraph::new(2, 0);
+        graph.add_edge(0, 1, 5, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        flooder.create_detection_event(NodeIdx(0));
+
+        DetectorNode::reset_local_radius_call_count();
+        let (_best_neighbor, _best_time) = flooder.find_next_event_at_node(NodeIdx(0));
+
+        assert_eq!(DetectorNode::local_radius_call_count(), 0);
+    }
+
+    #[test]
+    fn find_next_event_growing_skips_local_radius_for_occupied_neighbor() {
+        let mut graph = MatchingGraph::new(2, 0);
+        graph.add_edge(0, 1, 5, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        flooder.create_detection_event(NodeIdx(0));
+        flooder.create_detection_event(NodeIdx(1));
+
+        DetectorNode::reset_local_radius_call_count();
+        let (_best_neighbor, _best_time) = flooder.find_next_event_at_node(NodeIdx(0));
+
+        assert_eq!(DetectorNode::local_radius_call_count(), 0);
+    }
+
+    #[test]
+    fn find_next_event_not_growing_skips_local_radius_for_occupied_neighbor() {
+        let mut graph = MatchingGraph::new(2, 0);
+        graph.add_edge(0, 1, 5, &[]);
+
+        let mut flooder = GraphFlooder::new(graph);
+        let left = flooder.create_detection_event(NodeIdx(0));
+        flooder.create_detection_event(NodeIdx(1));
+        flooder.set_region_frozen(left);
+
+        DetectorNode::reset_local_radius_call_count();
+        let (_best_neighbor, _best_time) = flooder.find_next_event_at_node(NodeIdx(0));
+
+        assert_eq!(DetectorNode::local_radius_call_count(), 0);
+    }
+
 }

@@ -1,8 +1,16 @@
 use crate::interop::QueuedEventTracker;
 use crate::types::*;
 use crate::util::varying::VaryingCT;
+#[cfg(test)]
+use std::cell::Cell;
 
 use super::fill_region::GraphFillRegion;
+
+#[cfg(test)]
+thread_local! {
+    static RESET_CALLS: Cell<usize> = const { Cell::new(0) };
+    static LOCAL_RADIUS_CALLS: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Debug, Clone)]
 pub struct DetectorNode {
@@ -44,6 +52,9 @@ impl DetectorNode {
 
     /// The local radius at this node = top_region.radius + wrapped_radius_cached
     pub fn local_radius(&self, regions: &[GraphFillRegion]) -> VaryingCT {
+        #[cfg(test)]
+        LOCAL_RADIUS_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         match self.region_that_arrived_top {
             None => VaryingCT::frozen(0),
             Some(top_idx) => {
@@ -76,6 +87,8 @@ impl DetectorNode {
     }
 
     pub fn reset(&mut self) {
+        #[cfg(test)]
+        RESET_CALLS.with(|calls| calls.set(calls.get() + 1));
         self.region_that_arrived = None;
         self.region_that_arrived_top = None;
         self.reached_from_source = None;
@@ -116,5 +129,25 @@ impl DetectorNode {
             }
             r = parent.unwrap();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_reset_call_count() {
+        RESET_CALLS.with(|calls| calls.set(0));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_call_count() -> usize {
+        RESET_CALLS.with(|calls| calls.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_local_radius_call_count() {
+        LOCAL_RADIUS_CALLS.with(|calls| calls.set(0));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local_radius_call_count() -> usize {
+        LOCAL_RADIUS_CALLS.with(|calls| calls.get())
     }
 }

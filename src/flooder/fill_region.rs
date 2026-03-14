@@ -36,6 +36,19 @@ impl Default for GraphFillRegion {
 }
 
 impl GraphFillRegion {
+    pub fn reset_for_reuse(&mut self) {
+        self.blossom_parent = None;
+        self.blossom_parent_top = None;
+        self.alt_tree_node = None;
+        self.radius = VaryingCT::frozen(0);
+        self.shrink_event_tracker = QueuedEventTracker::default();
+        self.match_ = None;
+        self.blossom_children.clear();
+        self.shell_area.clear();
+        self.blossom_in_parent_loc = None;
+        self.blossom_in_child_loc = None;
+    }
+
     pub fn tree_equal(&self, other: &GraphFillRegion) -> bool {
         self.alt_tree_node.is_some() && self.alt_tree_node == other.alt_tree_node
     }

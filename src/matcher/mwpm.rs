@@ -52,7 +52,11 @@ impl Mwpm {
 
     pub fn create_detection_event(&mut self, node_idx: NodeIdx) {
         let region_idx = self.flooder.create_detection_event(node_idx);
-        let alt_idx = AltTreeIdx(self.flooder.node_arena.alloc());
+        let alt_idx = AltTreeIdx(
+            self.flooder
+                .node_arena
+                .alloc_with_reset(AltTreeNode::reset_for_reuse),
+        );
         self.flooder.node_arena[alt_idx.0] = AltTreeNode::new_root(region_idx);
         self.flooder.region_arena[region_idx.0].alt_tree_node = Some(alt_idx);
         self.flooder.set_region_growing(region_idx);
@@ -367,8 +371,7 @@ impl Mwpm {
         let blossom_children: Vec<RegionEdge> =
             std::mem::take(&mut self.flooder.region_arena[blossom_region.0].blossom_children);
         for child in &blossom_children {
-            self.flooder.region_arena[child.region.0].blossom_parent = None;
-            self.flooder.region_arena[child.region.0].blossom_parent_top = None;
+            self.clear_region_blossom_parent(child.region, true);
         }
 
         let blossom_alt_node = self.flooder.region_arena[blossom_region.0]
@@ -552,7 +555,11 @@ impl Mwpm {
         child_inner_to_outer_edge: CompressedEdge,
         child_compressed_edge: CompressedEdge,
     ) -> AltTreeIdx {
-        let child_idx = AltTreeIdx(self.flooder.node_arena.alloc());
+        let child_idx = AltTreeIdx(
+            self.flooder
+                .node_arena
+                .alloc_with_reset(AltTreeNode::reset_for_reuse),
+        );
         self.flooder.node_arena[child_idx.0] =
             AltTreeNode::new_pair(child_inner, child_outer, child_inner_to_outer_edge);
         self.flooder.region_arena[child_inner.0].alt_tree_node = Some(child_idx);
@@ -566,12 +573,86 @@ impl Mwpm {
         child_idx
     }
 
+    fn wrap_region_into_blossom(&mut self, region: RegionIdx, new_blossom_parent_and_top: RegionIdx) {
+        self.flooder.region_arena[region.0].blossom_parent = Some(new_blossom_parent_and_top);
+        self.wrap_region_descendants_into_blossom(region, new_blossom_parent_and_top);
+    }
+
+    fn wrap_region_descendants_into_blossom(
+        &mut self,
+        region: RegionIdx,
+        new_blossom_parent_and_top: RegionIdx,
+    ) {
+        self.flooder.region_arena[region.0].blossom_parent_top = Some(new_blossom_parent_and_top);
+
+        let shell_len = self.flooder.region_arena[region.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.flooder.region_arena[region.0].shell_area[i];
+            self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top =
+                Some(new_blossom_parent_and_top);
+            let wrapped_radius = self.flooder.graph.nodes[node_idx.0 as usize]
+                .compute_wrapped_radius(self.flooder.region_arena.items());
+            self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached = wrapped_radius;
+        }
+
+        let child_len = self.flooder.region_arena[region.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.flooder.region_arena[region.0].blossom_children[i].region;
+            self.wrap_region_descendants_into_blossom(child_region, new_blossom_parent_and_top);
+        }
+    }
+
+    fn clear_region_blossom_parent(
+        &mut self,
+        region: RegionIdx,
+        recompute_wrapped_radius: bool,
+    ) {
+        self.flooder.region_arena[region.0].blossom_parent = None;
+        self.clear_region_descendant_blossom_parent(region, region, recompute_wrapped_radius);
+    }
+
+    fn clear_region_descendant_blossom_parent(
+        &mut self,
+        region: RegionIdx,
+        new_top: RegionIdx,
+        recompute_wrapped_radius: bool,
+    ) {
+        self.flooder.region_arena[region.0].blossom_parent_top = Some(new_top);
+
+        let shell_len = self.flooder.region_arena[region.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.flooder.region_arena[region.0].shell_area[i];
+            self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top = Some(new_top);
+            if recompute_wrapped_radius {
+                let wrapped_radius = self.flooder.graph.nodes[node_idx.0 as usize]
+                    .compute_wrapped_radius(self.flooder.region_arena.items());
+                self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached =
+                    wrapped_radius;
+            }
+        }
+
+        let child_len = self.flooder.region_arena[region.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.flooder.region_arena[region.0].blossom_children[i].region;
+            self.clear_region_descendant_blossom_parent(
+                child_region,
+                new_top,
+                recompute_wrapped_radius,
+            );
+        }
+    }
+
     // -------------------------------------------------------------------
     // Blossom creation (simplified — delegates to flooder)
     // -------------------------------------------------------------------
 
     fn create_blossom(&mut self, cycle: &[RegionEdge]) -> RegionIdx {
-        let blossom_idx = RegionIdx(self.flooder.region_arena.alloc());
+        let blossom_idx = RegionIdx(
+            self.flooder
+                .region_arena
+                .alloc_with_reset(crate::flooder::fill_region::GraphFillRegion::reset_for_reuse),
+        );
+        self.flooder.region_arena[blossom_idx.0].blossom_parent_top = Some(blossom_idx);
 
         // Set blossom children
         self.flooder.region_arena[blossom_idx.0].blossom_children = cycle.to_vec();
@@ -580,57 +661,43 @@ impl Mwpm {
         // (mirrors C++ create_blossom: freeze + wrap_into_blossom + clear shrink_event_tracker)
         let cur_time = self.flooder.queue.cur_time;
         for child in cycle {
-            let r = &mut self.flooder.region_arena[child.region.0];
-            r.radius = r.radius.then_frozen_at_time(cur_time);
-            r.blossom_parent = Some(blossom_idx);
-            r.blossom_parent_top = Some(blossom_idx);
-            r.shrink_event_tracker.set_no_desired_event();
+            {
+                let r = &mut self.flooder.region_arena[child.region.0];
+                r.radius = r.radius.then_frozen_at_time(cur_time);
+                r.shrink_event_tracker.set_no_desired_event();
+            }
+            self.wrap_region_into_blossom(child.region, blossom_idx);
         }
 
         // The blossom region starts growing
         self.flooder.region_arena[blossom_idx.0].radius =
             crate::util::varying::VaryingCT::growing_varying_with_zero_distance_at_time(cur_time);
 
-        // Recursively collect ALL nodes in the blossom hierarchy
-        // (mirrors C++ do_op_for_each_node_in_total_area)
-        let all_nodes = Self::collect_total_area_nodes(&self.flooder.region_arena, blossom_idx);
-
-        // Update node ownership and wrapped radius cache
-        for &node_idx in &all_nodes {
-            self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top =
-                Some(blossom_idx);
-            self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached =
-                self.flooder.graph.nodes[node_idx.0 as usize]
-                    .compute_wrapped_radius(self.flooder.region_arena.items());
-        }
-
-        // Reschedule events for all nodes in the blossom
-        for &node_idx in &all_nodes {
-            self.flooder.reschedule_events_at_detector_node(node_idx);
-        }
+        self.update_blossom_area_and_reschedule(blossom_idx, blossom_idx);
 
         blossom_idx
     }
 
-    /// Recursively collect all node indices in a region's total area
-    /// (shell_area + all nested blossom children).
-    fn collect_total_area_nodes(
-        arena: &crate::util::arena::Arena<super::super::flooder::fill_region::GraphFillRegion>,
+    fn update_blossom_area_and_reschedule(
+        &mut self,
         region: RegionIdx,
-    ) -> Vec<NodeIdx> {
-        let mut nodes = Vec::new();
-        Self::collect_total_area_recursive(arena, region, &mut nodes);
-        nodes
-    }
-
-    fn collect_total_area_recursive(
-        arena: &crate::util::arena::Arena<super::super::flooder::fill_region::GraphFillRegion>,
-        region: RegionIdx,
-        out: &mut Vec<NodeIdx>,
+        blossom_top: RegionIdx,
     ) {
-        out.extend(arena[region.0].shell_area.iter().copied());
-        for child in &arena[region.0].blossom_children {
-            Self::collect_total_area_recursive(arena, child.region, out);
+        let shell_len = self.flooder.region_arena[region.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.flooder.region_arena[region.0].shell_area[i];
+            self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top =
+                Some(blossom_top);
+            self.flooder.graph.nodes[node_idx.0 as usize].wrapped_radius_cached =
+                self.flooder.graph.nodes[node_idx.0 as usize]
+                    .compute_wrapped_radius(self.flooder.region_arena.items());
+            self.flooder.reschedule_events_at_detector_node(node_idx);
+        }
+
+        let child_len = self.flooder.region_arena[region.0].blossom_children.len();
+        for i in 0..child_len {
+            let child_region = self.flooder.region_arena[region.0].blossom_children[i].region;
+            self.update_blossom_area_and_reschedule(child_region, blossom_top);
         }
     }
 
@@ -642,6 +709,11 @@ impl Mwpm {
         &mut self,
         region: RegionIdx,
     ) -> MatchingResult {
+        let boundary_edge = self.flooder.region_arena[region.0]
+            .match_
+            .as_ref()
+            .map(|m| m.edge)
+            .unwrap_or_else(CompressedEdge::empty);
         let has_match_region = self.flooder.region_arena[region.0]
             .match_
             .as_ref()
@@ -679,16 +751,12 @@ impl Mwpm {
                 };
             }
         } else if !has_blossom_children {
-            // Boundary match, no blossom children
-            let edge = self.flooder.region_arena[region.0]
-                .match_
-                .as_ref()
-                .unwrap()
-                .edge;
+            // PyMatching keeps a default-initialized match object even when the
+            // region is only carrying an implicit boundary/empty match state.
             let w = self.flooder.region_arena[region.0].radius.y_intercept();
             self.flooder.region_arena.free(region.0);
             return MatchingResult {
-                obs_mask: edge.obs_mask,
+                obs_mask: boundary_edge.obs_mask,
                 weight: w,
             };
         }
@@ -720,27 +788,21 @@ impl Mwpm {
         region: RegionIdx,
         res: &mut MatchingResult,
     ) -> RegionIdx {
-        let children: Vec<RegionEdge> = self.flooder.region_arena[region.0].blossom_children.clone();
+        let children: Vec<RegionEdge> =
+            std::mem::take(&mut self.flooder.region_arena[region.0].blossom_children);
 
-        // 1. Find which child owns the match edge's loc_from node.
-        //    We must do this BEFORE clearing blossom_parent, because
-        //    heir_region_for_blossom walks the blossom_parent chain.
-        //    We pass `region` as the target so the walk stops at the correct
-        //    blossom level (important for nested blossoms where
-        //    region_that_arrived_top may point to an outer blossom).
-        let match_edge = self.flooder.region_arena[region.0].match_.as_ref().unwrap().edge;
-        let subblossom = match_edge.loc_from
-            .and_then(|node_idx| {
-                let node = &self.flooder.graph.nodes[node_idx.0 as usize];
-                node.heir_region_for_blossom(self.flooder.region_arena.items(), region)
-            })
-            .expect("match edge loc_from must have a region");
-
-        // 2. Clear blossom parent on all children
+        // 1. Clear blossom parent on all children so detector nodes point back
+        //    to the direct child blossom that survives the shatter.
         for child in &children {
-            self.flooder.region_arena[child.region.0].blossom_parent = None;
-            self.flooder.region_arena[child.region.0].blossom_parent_top = None;
+            self.clear_region_blossom_parent(child.region, false);
         }
+
+        // 2. Find which child owns the match edge's loc_from node.
+        let match_edge = self.flooder.region_arena[region.0].match_.as_ref().unwrap().edge;
+        let subblossom = match_edge
+            .loc_from
+            .and_then(|node_idx| self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top)
+            .expect("match edge loc_from must have a region");
 
         // 3. Transfer the blossom's match to subblossom
         let blossom_match = self.flooder.region_arena[region.0].match_.clone().unwrap();
@@ -792,6 +854,11 @@ impl Mwpm {
         region: RegionIdx,
         match_edges: &mut Vec<CompressedEdge>,
     ) {
+        let boundary_edge = self.flooder.region_arena[region.0]
+            .match_
+            .as_ref()
+            .map(|m| m.edge)
+            .unwrap_or_else(CompressedEdge::empty);
         let has_match_region = self.flooder.region_arena[region.0]
             .match_
             .as_ref()
@@ -822,12 +889,9 @@ impl Mwpm {
                 return;
             }
         } else if !has_blossom_children {
-            let edge = self.flooder.region_arena[region.0]
-                .match_
-                .as_ref()
-                .unwrap()
-                .edge;
-            match_edges.push(edge);
+            if boundary_edge.loc_from.is_some() || boundary_edge.loc_to.is_some() || boundary_edge.obs_mask != 0 {
+                match_edges.push(boundary_edge);
+            }
             self.flooder.region_arena.free(region.0);
             return;
         }
@@ -857,20 +921,18 @@ impl Mwpm {
         region: RegionIdx,
         match_edges: &mut Vec<CompressedEdge>,
     ) -> RegionIdx {
-        let children: Vec<RegionEdge> = self.flooder.region_arena[region.0].blossom_children.clone();
-
-        let match_edge = self.flooder.region_arena[region.0].match_.as_ref().unwrap().edge;
-        let subblossom = match_edge.loc_from
-            .and_then(|node_idx| {
-                let node = &self.flooder.graph.nodes[node_idx.0 as usize];
-                node.heir_region_for_blossom(self.flooder.region_arena.items(), region)
-            })
-            .expect("match edge loc_from must have a region");
+        let children: Vec<RegionEdge> =
+            std::mem::take(&mut self.flooder.region_arena[region.0].blossom_children);
 
         for child in &children {
-            self.flooder.region_arena[child.region.0].blossom_parent = None;
-            self.flooder.region_arena[child.region.0].blossom_parent_top = None;
+            self.clear_region_blossom_parent(child.region, false);
         }
+
+        let match_edge = self.flooder.region_arena[region.0].match_.as_ref().unwrap().edge;
+        let subblossom = match_edge
+            .loc_from
+            .and_then(|node_idx| self.flooder.graph.nodes[node_idx.0 as usize].region_that_arrived_top)
+            .expect("match edge loc_from must have a region");
 
         let blossom_match = self.flooder.region_arena[region.0].match_.clone().unwrap();
         self.flooder.region_arena[subblossom.0].match_ = Some(Match {
@@ -914,8 +976,9 @@ impl Mwpm {
     }
 
     fn reschedule_region_nodes(&mut self, region: RegionIdx) {
-        let shell: Vec<NodeIdx> = self.flooder.region_arena[region.0].shell_area.clone();
-        for node_idx in shell {
+        let shell_len = self.flooder.region_arena[region.0].shell_area.len();
+        for i in 0..shell_len {
+            let node_idx = self.flooder.region_arena[region.0].shell_area[i];
             self.flooder.reschedule_events_at_detector_node(node_idx);
         }
     }
@@ -926,5 +989,26 @@ impl Mwpm {
 
     pub fn reset(&mut self) {
         self.flooder.reset();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flooder::graph::MatchingGraph;
+    use crate::test_alloc::{allocation_count, reset_allocation_count};
+
+    #[test]
+    fn reschedule_region_nodes_does_not_allocate() {
+        let mut graph = MatchingGraph::new(1, 0);
+        graph.add_boundary_edge(0, 5, &[]);
+
+        let mut mwpm = Mwpm::new(GraphFlooder::new(graph));
+        let region = mwpm.flooder.create_detection_event(NodeIdx(0));
+
+        reset_allocation_count();
+        mwpm.reschedule_region_nodes(region);
+
+        assert_eq!(allocation_count(), 0);
     }
 }

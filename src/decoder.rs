@@ -24,6 +24,7 @@ impl CompiledDecoder for CompiledMwpmDecoder {
         let obs_bytes = (num_obs + 7) / 8;
         let mut out = Vec::with_capacity(num_shots * obs_bytes);
         let mut matching = self.matching.lock().unwrap();
+        let mut predictions = Vec::new();
 
         for shot in 0..num_shots {
             let shot_dets = &dets[shot * det_bytes..(shot + 1) * det_bytes];
@@ -36,7 +37,7 @@ impl CompiledDecoder for CompiledMwpmDecoder {
                 }
             }
 
-            let predictions = matching.decode(&syndrome);
+            matching.decode_into(&syndrome, &mut predictions);
 
             // Pack predictions into bit-packed format
             let mut packed = vec![0u8; obs_bytes];
